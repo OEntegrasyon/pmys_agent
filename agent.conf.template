@@ -1,0 +1,7 @@
+[agent]
+uuid =
+mq_host = rabbitmq_host
+mq_port = rabbitmq_port
+mq_user = rabbitmq_user
+mq_pass = rabbitmq_pass
+

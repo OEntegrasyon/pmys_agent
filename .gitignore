@@ -1,0 +1,7 @@
+agent.log
+main.spec
+build/
+dist/
+venv/
+__pycache__
+agent.conf
