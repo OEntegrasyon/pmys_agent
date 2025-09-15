@@ -3,6 +3,7 @@ import pika, json, os
 import uuid as uuidlib
 from logger import logger
 from configparser import ConfigParser
+import netifaces
 import sys
 
 def get_base_path():
@@ -25,17 +26,25 @@ def get_connection_parameters():
     mq_pass = config.get('agent', 'mq_pass')
 
     conn_params = pika.ConnectionParameters(
-        host=mq_host,
-        port=mq_port,
-        credentials=pika.PlainCredentials(mq_user, mq_pass),
-        client_properties={'connection_name': connection_name},
-        heartbeat=60
+    host=mq_host,
+    port=mq_port,
+    credentials=pika.PlainCredentials(mq_user, mq_pass),
+    client_properties={'connection_name': connection_name},
+    heartbeat=30,
+    blocked_connection_timeout=10,
+    connection_attempts=5,
+    retry_delay=2,
     )
     return uuid, conn_params, config, config_file
 def get_ip_address():
-    result = subprocess.run(['hostname', '-I'], capture_output=True, text=True, check=True)
-    ip_address = result.stdout.strip().split()[0]
-    return ip_address if ip_address else None
+    for iface in netifaces.interfaces():
+        addrs = netifaces.ifaddresses(iface)
+        if netifaces.AF_INET in addrs:
+            for addr in addrs[netifaces.AF_INET]:
+                ip = addr.get('addr')
+                if ip and not ip.startswith("127.") and not ip.startswith("10.") and not ip.startswith("192.168.56."):
+                    return ip
+    return "127.0.0.1"
 
 def get_mac_by_ip(target_ip):
     for interface_name, interface_addrs in psutil.net_if_addrs().items():
@@ -111,6 +120,7 @@ def login_notify(user, conn_params, uuid):
         logger.info(f"Giriş yapan kullanıcı: {user}")
         connection = pika.BlockingConnection(conn_params)
         channel = connection.channel()
+        channel.queue_declare(queue='client_status', durable=True)
 
         channel.basic_publish(
             exchange='',
@@ -127,6 +137,7 @@ def first_time_register(conn_params):
     try:
         connection = pika.BlockingConnection(conn_params)
         channel = connection.channel()
+        channel.queue_declare(queue='client_status', durable=True)
 
         result = channel.queue_declare(queue='', exclusive=True)
         callback_queue = result.method.queue
@@ -178,6 +189,7 @@ def send_response(action, details):
     uuid, conn_params, config, config_file = get_connection_parameters()
     connection = pika.BlockingConnection(conn_params)
     channel = connection.channel()
+    channel.queue_declare(queue='client_policy_log', durable=True)
 
     channel.basic_publish(
         exchange='',

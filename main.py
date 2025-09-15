@@ -10,6 +10,7 @@ from utils import (
     send_response
     )
 import policies
+from laps_worker import LapsWorker
 
 current_logged_in_user = None
 
@@ -68,6 +69,13 @@ def listen_for_policies(conn_params):
     except Exception as e:
         logger.error(f"[listen_for_policies] Hata: {str(e)}")
 
+def start_laps_worker(conn_params, uuid):
+    try:
+        worker = LapsWorker(conn_params, agent_uuid=uuid)
+        worker.start()
+    except Exception as e:
+        logger.error(f"[LAPS worker] Hata: {e}")
+
 def main():
     uuid, conn_params, config, config_file = get_connection_parameters()
 
@@ -83,8 +91,11 @@ def main():
 
     login_detection_thread = threading.Thread(target=login_detection, kwargs={'conn_params': conn_params, 'uuid':uuid}, daemon=True)
     listen_for_policies_thread = threading.Thread(target=listen_for_policies, kwargs={'conn_params': conn_params,}, daemon=True)
+    laps_thread = threading.Thread(target=start_laps_worker, kwargs={'conn_params': conn_params, 'uuid': uuid}, daemon=True)
     login_detection_thread.start()
     listen_for_policies_thread.start()
+    laps_thread.start()
+    
     while True:
         time.sleep(60)
 
