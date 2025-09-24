@@ -77,25 +77,29 @@ def get_logged_in_user(detailed=None):
         output = subprocess.check_output("loginctl list-sessions --no-legend", shell=True).decode().strip()
         for line in output.splitlines():
             parts = line.split()
-            if len(parts) >= 5:
-                session_id, uid, user, seat, tty = parts[0], parts[1], parts[2], parts[3], parts[4]
+            if len(parts) >= 4: 
+                session_id, uid, user, seat = parts[0], parts[1], parts[2], parts[3]
 
                 is_active = subprocess.check_output(
                     ["loginctl", "show-session", str(session_id), "-p", "Active", "--value"],
                     text=True
                 ).strip()
 
-                display = subprocess.check_output(
-                    ["loginctl", "show-session", str(session_id), "-p", "Display", "--value"],
-                    text=True
-                ).strip()
-                dbus = f"unix:path=/run/user/{uid}/bus"
-
-                if is_active == "yes" and user not in ["root", "lightdm"] and seat != "-" and tty.startswith("tty"):
-                    return user if not detailed else (uid, user, display, dbus)
-
+                if is_active == "yes" and user not in ["root", "lightdm", "sddm"] and seat != "-":
+                    
+                    if detailed:
+                        display = subprocess.check_output(
+                            ["loginctl", "show-session", str(session_id), "-p", "Display", "--value"],
+                            text=True
+                        ).strip()
+                        dbus = f"unix:path=/run/user/{uid}/bus"
+                        return (uid, user, display, dbus)
+                    else:
+                        return user
+              
     except Exception as e:
         logger.error(f"[get_logged_in_user] Hata: {str(e)}")
+    
     return None if not detailed else (None, None, None, None)
 
 def login_notify(user, conn_params, uuid):
@@ -107,7 +111,6 @@ def login_notify(user, conn_params, uuid):
             "mac_address": get_mac_by_ip(get_ip_address()),
             "username": user
         }
-
         logger.info(f"Giriş yapan kullanıcı: {user}")
         connection = pika.BlockingConnection(conn_params)
         channel = connection.channel()
@@ -186,3 +189,50 @@ def send_response(action, details):
         properties=pika.BasicProperties(delivery_mode=2)
     )
     connection.close()
+
+
+    
+def run_command(cmd, timeout=30):
+    """
+    Komut çalıştır ve (başarı, çıktı) döndür.
+    
+    Args:
+        cmd (list): Çalıştırılacak komut (örnek: ["ls", "-l"])
+        timeout (int): Maksimum çalışma süresi (saniye)
+
+    Returns:
+        (bool, str): (Başarı durumu, Çıktı veya hata mesajı)
+    """
+    try:
+        logger.debug(f"[run_command] Çalıştırılıyor: {' '.join(cmd)} (timeout={timeout}s)")
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+
+        output = ""
+        if result.stdout:
+            output += result.stdout.strip()
+        if result.stderr:
+            if output:
+                output += "\n"
+            output += result.stderr.strip()
+
+        success = (result.returncode == 0)
+        logger.debug(f"[run_command] ExitCode={result.returncode}, Success={success}, Output={output}")
+        return success, output
+
+    except subprocess.TimeoutExpired:
+        msg = f"Komut zaman aşımına uğradı: {' '.join(cmd)}"
+        logger.error(f"[run_command] {msg}")
+        return False, msg
+    except FileNotFoundError:
+        msg = f"Komut bulunamadı: {cmd[0]}"
+        logger.error(f"[run_command] {msg}")
+        return False, msg
+    except Exception as e:
+        msg = f"Komut çalıştırma hatası: {str(e)}"
+        logger.error(f"[run_command] {msg}")
+        return False, msg
