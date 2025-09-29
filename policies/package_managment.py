@@ -8,40 +8,33 @@ from utils import get_logged_in_user, get_desktop_env, run_command
 # ==============================================================================
 # == PAKET YÖNETİCİSİ (APT) YAPILANDIRMA POLİTİKASI ============================
 # ==============================================================================
-
 def check_secure_apt_repositories(username, parameters):
     """
     /etc/apt/sources.list dosyasının içeriğini, sunucudan gelen
     standart içerikle karşılaştırır. Farklıysa, apply fonksiyonunu çağırır.
     """
-    # Bu politika kullanıcıya özel değil, sistem geneli olduğu için 'username' kullanılmaz.
-    
-    expected_content = parameters.get("repo_content")
-    if not expected_content:
-        return False, "Politika hatası: 'repo_content' parametresi ile standart depo içeriği belirtilmemiş."
+    expected_content_from_server = parameters.get("repo_content", "")
+    if not expected_content_from_server:
+        return False, "Politika hatası: 'repo_content' parametresi belirtilmemiş."
 
+    # ';' karakterini gerçek yeni satıra ('\n') çevirerek doğru formatı oluştur
+    expected_content = expected_content_from_server.replace(';', '\n')
     sources_path = "/etc/apt/sources.list"
     
     try:
         if not os.path.exists(sources_path):
-            # sources.list dosyası hiç yoksa, direkt uygula
             return apply_secure_apt_repositories(parameters)
 
         with open(sources_path, "r") as f:
             current_content = f.read()
 
-        # Karşılaştırma yaparken boşluk ve satır sonu farklarını önemsememek için
-        # her iki metnin de aktif satırlarını (yorum olmayan) bir sete çevirelim.
         current_repos = {line.strip() for line in current_content.splitlines() if line.strip() and not line.strip().startswith('#')}
         expected_repos = {line.strip() for line in expected_content.splitlines() if line.strip() and not line.strip().startswith('#')}
 
         if current_repos == expected_repos:
-            # Ek olarak sources.list.d içinde istenmeyen bir dosya var mı diye kontrol edilebilir.
-            # Şimdilik sadece ana dosyayı kontrol ediyoruz.
             return True, "Paket yöneticisi (apt) depoları zaten standartlara uygun."
         else:
             return apply_secure_apt_repositories(parameters)
-
     except Exception as e:
         return False, f"APT depo kontrolünde hata: {e}"
 
@@ -50,34 +43,44 @@ def apply_secure_apt_repositories(parameters):
     /etc/apt/sources.list dosyasını, parametre olarak verilen standart içerikle
     güvenli bir şekilde değiştirir ve 'apt update' komutunu çalıştırır.
     """
-    expected_content = parameters.get("repo_content")
+    expected_content_from_server = parameters.get("repo_content", "")
+    if not expected_content_from_server:
+        return False, "Politika hatası: 'repo_content' parametresi boş olamaz."
+
     sources_path = "/etc/apt/sources.list"
     temp_path = "/tmp/sources.list.new"
     
     try:
-        # 1. Her ihtimale karşı mevcut dosyanın yedeğini al
+        # --- TEK VE BASİT DÖNÜŞÜM ---
+        # Gelen metindeki ';' karakterini gerçek yeni satır '\n' ile değiştiriyoruz.
+        content_to_write = expected_content_from_server.replace(';', '\n')
+        
+        # Yedekleme
         if os.path.exists(sources_path):
             backup_path = f"/etc/apt/sources.list.bak_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-            subprocess.run(['sudo', 'cp', sources_path, backup_path], check=True)
+            success, output = run_command(['sudo', 'cp', sources_path, backup_path])
+            if not success:
+                return False, f"Yedek dosya oluşturulurken hata: {output}."
 
-        # 2. İstenen içeriği geçici bir dosyaya yaz
+        # Dosyayı doğru formatla yaz
         with open(temp_path, "w") as f:
-            f.write(expected_content)
-            if not expected_content.endswith('\n'):
+            f.write(content_to_write)
+            if not content_to_write.endswith('\n'):
                 f.write('\n')
 
-        # 3. Geçici dosyayı sudo ile asıl yerine taşı
-        subprocess.run(['sudo', 'mv', temp_path, sources_path], check=True)
-        
-        # 4. En önemli adım: Yeni depo listesiyle paket bilgilerini güncelle
+        # Dosyayı taşı
+        success, output = run_command(['sudo', 'mv', temp_path, sources_path])
+        if not success:
+            return False, f"Geçici dosya taşınırken hata: {output}."
+
+        # Depoları güncelle
         print("Depo listesi güncellendi, 'apt-get update' çalıştırılıyor...")
-        subprocess.run(['sudo', 'apt-get', 'update'], check=True, capture_output=True, text=True)
+        success, output = run_command(['sudo', 'apt-get', 'update'], timeout=120)
+        if not success:
+            return False, f"'apt-get update' çalıştırılırken hata: {output}."
 
         return True, "Paket yöneticisi depoları başarıyla standart yapılandırmaya getirildi."
 
-    except subprocess.CalledProcessError as e:
-        error_message = f"sudo komutlarında veya 'apt-get update' sırasında hata: {e.stderr}"
-        return False, error_message
     except Exception as e:
         return False, f"APT depoları uygulanırken genel hata: {e}"
 
@@ -116,19 +119,17 @@ def audit_gpg_keys(username, parameters):
                 for filename in os.listdir(path):
                     if filename.endswith((".gpg", ".asc")):
                         key_file = os.path.join(path, filename)
-                        try:
-                            # gpg komutunu en kararlı şekilde çalıştır (cat | gpg pipeline)
-                            cat_proc = subprocess.Popen(['cat', key_file], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                            gpg_cmd = ['gpg', '--batch', '--no-tty', '--with-colons', '--with-fingerprint']
-                            result = subprocess.run(gpg_cmd, stdin=cat_proc.stdout, capture_output=True, text=True, check=True, timeout=15)
-                            
-                            for line in result.stdout.splitlines():
-                                if line.startswith("fpr"):
-                                    fingerprint = line.strip().split(':')[9]
-                                    if fingerprint:
-                                        found_fingerprints.add(fingerprint)
-                        except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
-                            continue # Sorunlu dosyaları atla
+                        gpg_cmd = ['gpg', '--batch', '--no-tty', '--with-colons', '--with-fingerprint', key_file]
+                        success, output = run_command(gpg_cmd)
+
+                        if not success:
+                            continue 
+
+                        for line in output.splitlines():
+                            if line.startswith("fpr"):
+                                fingerprint = line.strip().split(':')[9]
+                                if fingerprint:
+                                    found_fingerprints.add(fingerprint)
 
         if not found_fingerprints:
             return False, "Sistemde taranan dizinlerde hiçbir geçerli GPG anahtarı bulunamadı."
@@ -196,14 +197,16 @@ exit 0
             f.write(script_content)
 
         # 2. Geçici dosyayı sudo ile asıl yerine taşı
-        subprocess.run(['sudo', 'mv', temp_path, cron_script_path], check=True)
-        
+        success, output = run_command(['sudo', 'mv', temp_path, cron_script_path])
+        if not success:
+            return False, f"Geçici dosya taşınırken hata: {output}. 'sudoers' dosyasını kontrol edin."
+
         # 3. Betiği çalıştırılabilir yap (chmod +x)
-        subprocess.run(['sudo', 'chmod', '+x', cron_script_path], check=True)
+        success, output = run_command(['sudo', 'chmod', '+x', cron_script_path])
+        if not success:
+            return False, f"Betik çalıştırılabilir hale getirilirken hata: {output}. 'sudoers' dosyasını kontrol edin."
 
         return True, "Günlük otomatik güncelleme betiği başarıyla oluşturuldu."
-
-    except subprocess.CalledProcessError as e:
-        return False, f"Güncelleme betiği oluşturulurken hata: {e}. 'sudoers' dosyasını kontrol edin."
+  
     except Exception as e:
         return False, f"Güncelleme betiği uygulanırken genel hata: {e}"

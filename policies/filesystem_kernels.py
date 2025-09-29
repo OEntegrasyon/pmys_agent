@@ -58,13 +58,13 @@ def apply_module_disabled(module_name: str) -> tuple[bool, str]:
             f.write(rule_content)
 
         # sudo ile dosyayı kalıcı yerine taşı
-        subprocess.run(['sudo', 'mv', temp_path, rule_path], check=True)
+        success, output = run_command(['sudo', 'mv', temp_path, rule_path])
+        if not success:
+            return False, f"Modül kural dosyası oluşturulamadı: {output}. 'sudoers' dosyasını kontrol edin."
 
         return True, f"{module_name} modülü başarıyla devre dışı bırakıldı."
     
     except PermissionError:
         return False, f"Yetki hatası: {temp_path} dosyasına yazma izni yok."
-    except subprocess.CalledProcessError as e:
-        return False, f"sudo veya mv komutunda hata: {e}. 'sudoers' dosyasını kontrol edin."
     except Exception as e:
         return False, f"Modül devre dışı bırakılırken genel bir hata oluştu: {e}"

@@ -42,9 +42,15 @@ def apply_message_of_the_day(parameters):
     temp_path = "/tmp/motd.tmp"
     try:
         with open(temp_path, "w") as f: f.write(banner_text + "\n")
-        subprocess.run(['sudo', 'mv', temp_path, file_path], check=True)
-        subprocess.run(['sudo', 'chown', 'root:root', file_path], check=True)
-        subprocess.run(['sudo', 'chmod', '644', file_path], check=True)
+        success, output=run_command(['sudo', 'mv', temp_path, file_path])
+        if not success:
+            return False, f"Günün Mesajı (motd) dosyası güncellenemedi: {output}"
+        success, output = run_command(['sudo', 'chown', 'root:root', file_path])
+        if not success:
+            return False, f"Günün Mesajı (motd) dosyasının sahibi değiştirilemedi: {output}"
+        success, output = run_command(['sudo', 'chmod', '644', file_path])
+        if not success:
+            return False, f"Günün Mesajı (motd) dosyasının izinleri değiştirilemedi: {output}"
         return True, "Günün Mesajı (motd) başarıyla yapılandırıldı."
     except Exception as e:
         return False, f"Günün Mesajı (motd) uygulanırken hata: {e}. 'sudoers' dosyasını kontrol edin."
@@ -84,9 +90,15 @@ def apply_local_login_banner(parameters):
     temp_path = "/tmp/issue.tmp"
     try:
         with open(temp_path, "w") as f: f.write(banner_text + "\n")
-        subprocess.run(['sudo', 'mv', temp_path, file_path], check=True)
-        subprocess.run(['sudo', 'chown', 'root:root', file_path], check=True)
-        subprocess.run(['sudo', 'chmod', '644', file_path], check=True)
+        success, output = run_command(['sudo', 'mv', temp_path, file_path])
+        if not success:
+            return False, f"Yerel giriş uyarı başlığı (issue) dosyası güncellenemedi: {output}"
+        success, output = run_command(['sudo', 'chown', 'root:root', file_path])
+        if not success:
+            return False, f"Yerel giriş uyarı başlığı (issue) dosyasının sahibi değiştirilemedi: {output}"
+        success, output = run_command(['sudo', 'chmod', '644', file_path])
+        if not success:
+            return False, f"Yerel giriş uyarı başlığı (issue) dosyasının izinleri değiştirilemedi: {output}"
         return True, "Yerel giriş uyarı başlığı (issue) başarıyla yapılandırıldı."
     except Exception as e:
         return False, f"Yerel giriş uyarı başlığı (issue) uygulanırken hata: {e}. 'sudoers' dosyasını kontrol edin."
@@ -126,9 +138,15 @@ def apply_remote_login_banner(parameters):
     temp_path = "/tmp/issue.net.tmp"
     try:
         with open(temp_path, "w") as f: f.write(banner_text + "\n")
-        subprocess.run(['sudo', 'mv', temp_path, file_path], check=True)
-        subprocess.run(['sudo', 'chown', 'root:root', file_path], check=True)
-        subprocess.run(['sudo', 'chmod', '644', file_path], check=True)
+        success, output = run_command(['sudo', 'mv', temp_path, file_path])
+        if not success:
+            return False, f"Uzak giriş uyarı başlığı (issue.net) dosyası güncellenemedi: {output}"
+        success, output = run_command(['sudo', 'chown', 'root:root', file_path])
+        if not success:
+            return False, f"Uzak giriş uyarı başlığı (issue.net) dosyasının sahibi değiştirilemedi: {output}"
+        success, output = run_command(['sudo', 'chmod', '644', file_path])
+        if not success:
+            return False, f"Uzak giriş uyarı başlığı (issue.net) dosyasının izinleri değiştirilemedi: {output}"
         return True, "Uzak giriş uyarı başlığı (issue.net) başarıyla yapılandırıldı."
     except Exception as e:
         return False, f"Uzak giriş uyarı başlığı (issue.net) uygulanırken hata: {e}. 'sudoers' dosyasını kontrol edin."

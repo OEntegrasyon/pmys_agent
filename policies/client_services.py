@@ -19,19 +19,15 @@ def ensure_package_is_removed(username, parameters):
         return False, "Politika hatası: 'package_name' parametresi ile kaldırılacak paket adı belirtilmemiş."
         
     try:
-        # dpkg -l komutu paketin durumunu kontrol eder.
-        # 'ii' (install ok installed) çıktıda varsa, paket kurulu demektir.
-        result = subprocess.run(['dpkg', '-l', package_name], capture_output=True, text=True, check=False)
-        
-        # result.returncode != 0 ise paket hiç bulunamamıştır.
-        if result.returncode != 0 or f"ii  {package_name}" not in result.stdout:
-            return True, f"'{package_name}' paketi zaten sistemde kurulu değil."
-        else:
-            # Paket kurulu ise, kaldırılması için apply fonksiyonunu çağır.
+       success, output = run_command(['dpkg', '-l', package_name])
+
+       if f"ii  {package_name}" in output:
             return apply_package_removal(package_name)
+       else:
+            return True, f"'{package_name}' paketi zaten sistemde kurulu değil."
 
     except Exception as e:
-        return False, f"Paket durumu kontrol edilirken hata: {e}"
+        return False, f"Paket durumu kontrol edilirken beklenmedik bir hata oluştu: {e}"
 
 
 def apply_package_removal(package_name: str) -> tuple[bool, str]:
@@ -43,16 +39,12 @@ def apply_package_removal(package_name: str) -> tuple[bool, str]:
         print(f"'{package_name}' paketi sistemden kaldırılıyor...")
         # '-y' parametresi tüm onay sorularına otomatik 'evet' yanıtı verir.
         # 'purge' komutu, paketi ve ilgili tüm yapılandırma dosyalarını siler.
-        subprocess.run(
-            ['sudo', 'apt-get', 'purge', '-y', package_name],
-            check=True,
-            capture_output=True,
-            text=True
+        success, output = run_command(
+            ['sudo', 'apt-get', 'purge', '-y', package_name]
         )
+        if not success:
+            return False, f"'{package_name}' paketi kaldırılamadı: {output}. 'sudoers' dosyasını kontrol edin."
         return True, f"'{package_name}' paketi ve yapılandırma dosyaları başarıyla sistemden kaldırıldı."
-
-    except subprocess.CalledProcessError as e:
-        return False, f"'{package_name}' paketi kaldırılırken hata: {e.stderr}. 'sudoers' dosyasını kontrol edin."
     except Exception as e:
         return False, f"Paket kaldırılırken genel bir hata oluştu: {e}"
 # ==============================================================================

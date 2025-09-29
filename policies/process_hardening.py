@@ -18,17 +18,15 @@ def enforce_aslr_enabled(username, parameters):
     expected_value = "2"
     
     try:
-        result = subprocess.run(['sysctl', key], capture_output=True, text=True, check=True)
-        current_value = result.stdout.strip().split('=')[-1].strip()
+        success, output = run_command(['sysctl', key])
+        if not success:
+            return False, f"ASLR kontrol edilirken hata: {output}"
+        current_value = output.strip().split('=')[-1].strip()
 
         if current_value == expected_value:
             return True, f"{key} değeri zaten '{expected_value}' olarak doğru ayarlanmış."
         else:
             return apply_aslr_enabled()
-            
-    except subprocess.CalledProcessError:
-        # Anahtar hiç var olmayabilir, bu durumda oluşturmayı deneriz.
-        return apply_aslr_enabled()
     except Exception as e:
         return False, f"ASLR kontrolünde hata: {e}"
 
@@ -44,10 +42,15 @@ def apply_aslr_enabled():
     try:
         with open(temp_path, "w") as f:
             f.write(f"{key} = {value}\n")
-        
-        subprocess.run(['sudo', 'mv', temp_path, config_path], check=True)
-        subprocess.run(['sudo', 'sysctl', '-p', config_path], check=True)
-        
+
+        success, output = run_command(['sudo', 'mv', temp_path, config_path])
+        if not success:
+            return False, f"Geçici dosya taşınırken hata: {output}. 'sudoers' dosyasını kontrol edin."
+
+        success, output = run_command(['sudo', 'sysctl', '-p', config_path])
+        if not success:
+            return False, f"Sysctl yapılandırması yüklenirken hata: {output}. 'sudoers' dosyasını kontrol edin."
+
         return True, f"{key} değeri başarıyla '{value}' olarak ayarlandı."
 
     except Exception as e:
@@ -67,16 +70,15 @@ def restrict_ptrace_scope(username, parameters):
     expected_value = "1"
     
     try:
-        result = subprocess.run(['sysctl', key], capture_output=True, text=True, check=True)
-        current_value = result.stdout.strip().split('=')[-1].strip()
+        success, output = run_command(['sysctl', key])
+        if not success:
+            return False, f"ptrace kontrol edilirken hata: {output}"
+        current_value = output.strip().split('=')[-1].strip()
 
         if current_value == expected_value:
             return True, f"{key} değeri zaten '{expected_value}' olarak doğru ayarlanmış."
         else:
             return apply_ptrace_scope()
-            
-    except subprocess.CalledProcessError:
-        return apply_ptrace_scope()
     except Exception as e:
         return False, f"ptrace kontrolünde hata: {e}"
 
@@ -93,8 +95,13 @@ def apply_ptrace_scope():
         with open(temp_path, "w") as f:
             f.write(f"{key} = {value}\n")
 
-        subprocess.run(['sudo', 'mv', temp_path, config_path], check=True)
-        subprocess.run(['sudo', 'sysctl', '-p', config_path], check=True)
+        success, output = run_command(['sudo', 'mv', temp_path, config_path])
+        if not success:
+            return False, f"Geçici dosya taşınırken hata: {output}. 'sudoers' dosyasını kontrol edin."
+
+        success, output = run_command(['sudo', 'sysctl', '-p', config_path])
+        if not success:
+            return False, f"Sysctl yapılandırması yüklenirken hata: {output}. 'sudoers' dosyasını kontrol edin."
 
         return True, f"{key} değeri başarıyla '{value}' olarak ayarlandı."
     except Exception as e:
@@ -117,12 +124,14 @@ def restrict_core_dumps(username, parameters):
         # Adım 1: sysctl değerini kontrol et
         sysctl_configured = False
         try:
-            result = subprocess.run(['sysctl', sysctl_key], capture_output=True, text=True, check=True)
-            current_sysctl_value = result.stdout.strip().split('=')[-1].strip()
+            success, output = run_command(['sysctl', sysctl_key])
+            if not success:
+                return False, f"Sysctl kontrol edilirken hata: {output}"
+            current_sysctl_value = output.strip().split('=')[-1].strip()
             if current_sysctl_value == expected_sysctl_value:
                 sysctl_configured = True
-        except subprocess.CalledProcessError:
-            sysctl_configured = False # Anahtar yoksa, ayarlı değil demektir.
+        except Exception as e:
+            return False, f"Sysctl kontrolünde hata: {e}"
 
         # Adım 2: limits.conf dosyasını kontrol et
         limit_configured = False
@@ -155,8 +164,14 @@ def apply_core_dumps():
         temp_path = "/tmp/99-coredump-hardening.conf"
         with open(temp_path, "w") as f:
             f.write(f"{key} = {value}\n")
-        subprocess.run(['sudo', 'mv', temp_path, config_path], check=True)
-        subprocess.run(['sudo', 'sysctl', '-p', config_path], check=True)
+        success, output = run_command(['sudo', 'mv', temp_path, config_path])
+        if not success:
+            return False, f"Geçici dosya taşınırken hata: {output}. 'sudoers' dosyasını kontrol edin."
+
+        success, output = run_command(['sudo', 'sysctl', '-p', config_path])
+        if not success:
+            return False, f"Sysctl yapılandırması yüklenirken hata: {output}. 'sudoers' dosyasını kontrol edin."
+
     except Exception as e:
         return False, f"Core dump için sysctl uygulanırken hata: {e}. sudoers'ı kontrol edin."
 
@@ -166,12 +181,13 @@ def apply_core_dumps():
         expected_limit_line = "* hard core 0"
         append_content = f"\n# CIS: Core dumps disabled for security\n{expected_limit_line}\n"
         
-        # Dosyaya ekleme işlemini sudo ile güvenli bir şekilde yap
-        subprocess.run(
-            f"sudo sh -c 'echo \"{append_content}\" >> {limits_path}'",
-            shell=True, check=True
-        )
-        
+
+        cmd = ['sudo', 'sh', '-c', f'echo "{append_content}" >> {limits_path}']
+        success, output = run_command(cmd)
+
+        if not success:
+            return False, f"limits.conf dosyasına ekleme yapılırken hata: {output}. 'sudoers' dosyasını kontrol edin."
+
     except Exception as e:
         return False, f"limits.conf düzenlenirken hata: {e}. sudoers'ı kontrol edin."
 

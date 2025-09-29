@@ -3,6 +3,7 @@ import re
 import stat
 import subprocess
 from logger import logger
+from utils import run_command;
 
 def restore_all_to_default():
     """
@@ -15,8 +16,6 @@ def restore_all_to_default():
 
     # Her bir geri alma fonksiyonunu sırayla ve güvenli bir şekilde çağır
     _revert_safely(revert_apparmor_in_bootloader, "AppArmor GRUB")
-    _revert_safely(revert_disabled_apparmor_profiles, "AppArmor Disabled Profiles")
-    _revert_safely(revert_enforced_apparmor_profiles, "AppArmor Enforce Mode")
     _revert_safely(revert_login_banners, "Login Banners")
     _revert_safely(revert_bootloader_password, "Bootloader Password")
     _revert_safely(revert_bootloader_permissions, "Bootloader Permissions")
@@ -73,48 +72,18 @@ def revert_apparmor_in_bootloader():
         with open(temp_path, "w") as f:
             f.write(new_content)
 
-        subprocess.run(['sudo', 'mv', temp_path, config_path], check=True)
-        subprocess.run(['sudo', 'update-grub'], check=True)
+        success , output = run_command(['sudo', 'mv', temp_path, config_path])
+        if not success:
+            logger.error(f"[DEFAULT] GRUB yapılandırması geri alınamadı: {output}")
+            return
+
+        success, output = run_command(['sudo', 'update-grub'])
+        if not success:
+            logger.error(f"[DEFAULT] GRUB güncellenirken hata: {output}")
+            return
         logger.info("[DEFAULT] GRUB başarıyla varsayılana döndürüldü.")
 
-def revert_disabled_apparmor_profiles():
-    """
-    CIS politikasının /etc/apparmor.d/disable/ dizinini temizlemesini geri alır.
-    Pardus'un varsayılanında bazı profiller disable olabilir, bu yüzden bu fonksiyon
-    genellikle bir şey yapmaz veya çok dikkatli uygulanmalıdır.
-    Şimdilik boş bırakıyoruz çünkü varsayılan durum "boş bir disable dizini" olabilir.
-    """
-    logger.info("[DEFAULT] AppArmor 'disable' dizini için geri alma işlemi atlanıyor (varsayılan bilinmiyor).")
-    pass
-
-def revert_enforced_apparmor_profiles():
-    """
-    CIS politikasının 'complain' modundaki profilleri 'enforce' yapmasını geri alır.
-    Bu genellikle istenmez, çünkü sistemin varsayılanı zaten 'enforce' olmalıdır.
-    İstenirse, 'aa-complain' komutuyla belirli profiller geri alınabilir.
-    """
-    logger.info("[DEFAULT] AppArmor 'enforce' modu için geri alma işlemi atlanıyor (varsayılan enforce).")
-    pass
-
-def revert_apparmor_installation():
-    """
-    CIS politikasının kurduğu AppArmor paketlerini kaldırır.
-    Eğer sistemin varsayılanında AppArmor olmaması gerekiyorsa bu kullanılır.
-    """
-    packages_to_remove = ["apparmor", "apparmor-utils"]
-    logger.info(f"[DEFAULT] AppArmor paketleri ({', '.join(packages_to_remove)}) kaldırılıyor...")
-    try:
-        # dpkg -l ile paketin kurulu olup olmadığını kontrol et
-        result = subprocess.run(['dpkg', '-l', 'apparmor'], capture_output=True, text=True)
-        if "ii  apparmor" in result.stdout: # Eğer kuruluysa
-            subprocess.run(['sudo', 'apt-get', 'purge', '-y'] + packages_to_remove, check=True)
-            logger.info("[DEFAULT] AppArmor paketleri başarıyla kaldırıldı.")
-        else:
-            logger.info("[DEFAULT] AppArmor paketleri zaten kurulu değil.")
-    except Exception as e:
-        logger.error(f"[DEFAULT] AppArmor paketleri kaldırılırken hata: {e}")
-
-#---------------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------
 
 ### 1. Login Banners (Giriş Başlıkları) Geri Alma ###
 
@@ -133,7 +102,10 @@ def revert_login_banners():
                 # Pardus'un varsayılanında bu dosyalar genellikle boştur veya sadece
                 # sistem bilgisi içerir. Güvenli varsayılan, bu dosyaları silmektir.
                 logger.info(f"[DEFAULT] '{file_path}' kaldırılıyor...")
-                subprocess.run(['sudo', 'rm', '-f', file_path], check=True)
+                success, output = run_command(['sudo', 'rm', '-f', file_path])
+                if not success:
+                    logger.error(f"[DEFAULT] '{file_path}' kaldırılırken hata: {output}")
+                    continue
                 logger.info(f"[DEFAULT] '{file_path}' başarıyla varsayılana döndürüldü (kaldırıldı).")
             except Exception as e:
                 logger.error(f"[DEFAULT] '{file_path}' kaldırılırken hata: {e}")
@@ -154,11 +126,16 @@ def revert_bootloader_password():
     if os.path.exists(auth_file_path):
         try:
             logger.info(f"[DEFAULT] GRUB parola dosyası '{auth_file_path}' kaldırılıyor...")
-            subprocess.run(['sudo', 'rm', '-f', auth_file_path], check=True)
-            
-            # Değişikliğin geçerli olması için GRUB'u güncellemek ŞART!
+            success, output = run_command(['sudo', 'rm', '-f', auth_file_path])
+            if not success:
+                logger.error(f"[DEFAULT] GRUB parola dosyası kaldırılırken hata: {output}")
+                return
+            # Değişikliğin geçerli olması için GRUB'u güncellem
             logger.info("[DEFAULT] GRUB yapılandırması güncelleniyor...")
-            subprocess.run(['sudo', 'update-grub'], check=True)
+            success, output = run_command(['sudo', 'update-grub'])
+            if not success:
+                logger.error(f"[DEFAULT] GRUB güncellenirken hata: {output}")
+                return
             logger.info("[DEFAULT] GRUB parolası başarıyla kaldırıldı.")
         except Exception as e:
             logger.error(f"[DEFAULT] GRUB parolası geri alınırken hata: {e}")
@@ -196,7 +173,10 @@ def revert_bootloader_permissions():
         # Eğer izinler varsayılandan farklıysa (yani 600 yapılmışsa)
         if current_perms != default_perms:
             logger.info(f"[DEFAULT] '{grub_cfg_path}' izinleri ({current_perms}) varsayılana ({default_perms}) döndürülüyor...")
-            subprocess.run(['sudo', 'chmod', '644', grub_cfg_path], check=True)
+            success, output = run_command(['sudo', 'chmod', '644', grub_cfg_path])
+            if not success:
+                logger.error(f"[DEFAULT] '{grub_cfg_path}' izinleri güncellenirken hata: {output}")
+                return
             logger.info(f"[DEFAULT] '{grub_cfg_path}' izinleri başarıyla varsayılana döndürüldü.")
         else:
             logger.info(f"[DEFAULT] '{grub_cfg_path}' izinleri zaten varsayılan durumda ({current_perms}).")
@@ -227,31 +207,30 @@ def revert_package_removals():
     try:
         # Paket listesini güncellemek her zaman iyi bir pratiktir.
         logger.info("[DEFAULT] Paket listesi güncelleniyor (apt-get update)...")
-        subprocess.run(['sudo', 'apt-get', 'update'], check=True, capture_output=True)
+        success, output = run_command(['sudo', 'apt-get', 'update'])
+        if not success:
+            logger.warning(f"[DEFAULT] apt-get update başarısız oldu: {output}. Yine de devam ediliyor.")
     except Exception as e:
         logger.warning(f"[DEFAULT] apt-get update başarısız oldu, yine de devam ediliyor: {e}")
 
     for package_name in PACKAGES_TO_REINSTALL:
         try:
             # Paketin kurulu olup olmadığını kontrol et
-            result = subprocess.run(['dpkg', '-l', package_name], capture_output=True, text=True, check=False)
-            
-            # Eğer paket kurulu değilse (yani CIS politikası işini yapmışsa)
-            if result.returncode != 0 or f"ii  {package_name}" not in result.stdout:
+            success, output = run_command(['dpkg', '-l', package_name])
+            if not success or f"ii  {package_name}" not in output:
                 logger.info(f"[DEFAULT] '{package_name}' paketi kurulu değil, varsayılana döndürmek için YÜKLENİYOR...")
                 
                 # Paketi yeniden yükle
-                install_result = subprocess.run(
-                    ['sudo', 'apt-get', 'install', '-y', package_name],
-                    check=True, capture_output=True, text=True
+                success, output = run_command(
+                    ['sudo', 'apt-get', 'install', '-y', package_name]
                 )
+                if not success:
+                    logger.error(f"[DEFAULT] '{package_name}' paketi yüklenirken hata: {output}")
+                    return
                 logger.info(f"[DEFAULT] '{package_name}' paketi başarıyla yüklendi.")
             else:
                 # Paket zaten kuruluysa, bir şey yapmaya gerek yok.
                 logger.info(f"[DEFAULT] '{package_name}' paketi zaten kurulu (varsayılan durum).")
-
-        except subprocess.CalledProcessError as e:
-            logger.error(f"[DEFAULT] '{package_name}' paketi yüklenirken hata: {e.stderr or e.stdout}")
         except Exception as e:
             logger.error(f"[DEFAULT] '{package_name}' paketi işlenirken genel hata: {e}")
 #------------------------------------------------------------------------------
@@ -293,8 +272,10 @@ def revert_disabled_modules():
                 logger.info(f"[DEFAULT] '{module_name}' modülü için engelleme kuralı kaldırılıyor...")
                 
                 # Dosyayı silerek modülün tekrar yüklenebilmesini sağla
-                subprocess.run(['sudo', 'rm', '-f', rule_path], check=True)
-                logger.info(f"[DEFAULT] '{module_name}' modülü başarıyla yeniden etkinleştirildi.")
+                success, output = run_command(['sudo', 'rm', '-f', rule_path])
+                if not success:
+                    logger.error(f"[DEFAULT] '{module_name}' modül kuralı kaldırılırken hata: {output}")
+                    continue
             else:
                 # Dosya yoksa, sistem zaten varsayılan durumdadır.
                 logger.info(f"[DEFAULT] '{module_name}' modülü zaten etkin (varsayılan durum).")
@@ -372,9 +353,14 @@ def revert_fstab_changes():
             with open(temp_path, "w") as f:
                 f.writelines(new_lines)
             
-            subprocess.run(['sudo', 'mv', temp_path, fstab_path], check=True)
+            success, output = run_command(['sudo', 'mv', temp_path, fstab_path])
+            if not success:
+                logger.error(f"[DEFAULT] /etc/fstab geri alınamadı: {output}")
+                return
             # Değişikliklerin anında geçerli olması için sistemi yeniden mount etmeyi dene
-            subprocess.run(['sudo', 'mount', '-a'], check=False) # Hata verirse bile devam etsin
+            success, output = run_command(['sudo', 'mount', '-a']) # Hata verirse bile devam etsin
+            if not success:
+                logger.error(f"[DEFAULT] /etc/fstab yeniden mount edilirken hata: {output}")
             logger.info("[DEFAULT] /etc/fstab başarıyla varsayılana döndürüldü.")
         else:
             logger.info("[DEFAULT] /etc/fstab zaten varsayılan durumda.")
@@ -400,8 +386,11 @@ def revert_interface_protocols():
     if os.path.exists(wifi_blacklist_file):
         try:
             logger.info(f"[DEFAULT] Kablosuz arayüz engelleme kuralı '{wifi_blacklist_file}' kaldırılıyor...")
-            subprocess.run(['sudo', 'rm', '-f', wifi_blacklist_file], check=True)
-            logger.info("[DEFAULT] Kablosuz arayüz engelleme kuralı başarıyla kaldırıldı.")
+            success, output = run_command(['sudo', 'rm', '-f', wifi_blacklist_file])
+            if not success:
+                logger.error(f"[DEFAULT] Kablosuz arayüz engelleme kuralı kaldırılırken hata: {output}")
+            else:
+                logger.info("[DEFAULT] Kablosuz arayüz engelleme kuralı başarıyla kaldırıldı.")
         except Exception as e:
             logger.error(f"[DEFAULT] Kablosuz arayüz kuralı geri alınırken hata: {e}")
 
@@ -409,11 +398,14 @@ def revert_interface_protocols():
     # CIS politikası paketi kaldırmış veya servisi maskelemiş olabilir.
     # Geri alma işlemi servisi sadece 'unmask' eder, paketi yeniden kurmaz.
     try:
-        status_check = subprocess.run(['systemctl', 'is-enabled', 'bluetooth.service'], capture_output=True, text=True)
-        if "masked" in status_check.stdout:
+        success, output = run_command(['systemctl', 'is-enabled', 'bluetooth.service'])
+        if "masked" in output:
             logger.info("[DEFAULT] Bluetooth servisi 'unmask' ediliyor...")
-            subprocess.run(['sudo', 'systemctl', 'unmask', 'bluetooth.service'], check=True)
-            logger.info("[DEFAULT] Bluetooth servisi başarıyla 'unmask' edildi.")
+            success, output = run_command(['sudo', 'systemctl', 'unmask', 'bluetooth.service'])
+            if not success:
+                logger.error(f"[DEFAULT] Bluetooth servisi 'unmask' edilirken hata: {output}")
+            else:
+                logger.info("[DEFAULT] Bluetooth servisi başarıyla 'unmask' edildi.")
     except Exception as e:
          logger.error(f"[DEFAULT] Bluetooth servisi geri alınırken hata: {e}")
 
@@ -453,7 +445,9 @@ def revert_sysctl_parameters():
         if os.path.exists(config_path):
             try:
                 logger.info(f"[DEFAULT] Sysctl kural dosyası '{config_path}' kaldırılıyor...")
-                subprocess.run(['sudo', 'rm', '-f', config_path], check=True)
+                success, output = run_command(['sudo', 'rm', '-f', config_path])
+                if not success:
+                    logger.error(f"[DEFAULT] '{config_path}' kaldırılırken hata: {output}")
                 changes_made = True
             except Exception as e:
                 logger.error(f"[DEFAULT] '{config_path}' kaldırılırken hata: {e}")
@@ -463,8 +457,11 @@ def revert_sysctl_parameters():
         try:
             logger.info("[DEFAULT] Sysctl ayarları yeniden yükleniyor...")
             # '-p' parametresi olmadan çalıştırmak, varsayılan dosyalardan ayarları yeniden okur.
-            subprocess.run(['sudo', 'sysctl', '--system'], check=True)
-            logger.info("[DEFAULT] Sysctl ayarları başarıyla varsayılana döndürüldü.")
+            success, output = run_command(['sudo', 'sysctl', '--system'])
+            if not success:
+                logger.error(f"[DEFAULT] 'sysctl --system' komutu çalıştırılırken hata: {output}")
+            else:
+                logger.info("[DEFAULT] Sysctl ayarları başarıyla varsayılana döndürüldü.")
         except Exception as e:
             logger.error(f"[DEFAULT] 'sysctl --system' komutu çalıştırılırken hata: {e}")
 
@@ -483,8 +480,11 @@ def revert_apt_and_update_settings():
     if os.path.exists(cron_script_path):
         try:
             logger.info(f"[DEFAULT] Otomatik güncelleme betiği '{cron_script_path}' kaldırılıyor...")
-            subprocess.run(['sudo', 'rm', '-f', cron_script_path], check=True)
-            logger.info(f"[DEFAULT] Otomatik güncelleme betiği başarıyla kaldırıldı.")
+            success, output = run_command(['sudo', 'rm', '-f', cron_script_path])
+            if not success:
+                logger.error(f"[DEFAULT] Otomatik güncelleme betiği kaldırılırken hata: {output}")
+            else:
+                logger.info("[DEFAULT] Otomatik güncelleme betiği başarıyla kaldırıldı.")
         except Exception as e:
             logger.error(f"[DEFAULT] Otomatik güncelleme betiği kaldırılırken hata: {e}")
     else:
@@ -503,10 +503,13 @@ def revert_apt_and_update_settings():
         
         try:
             logger.info(f"[DEFAULT] '{sources_path}' en son yedekten ('{latest_backup}') geri yükleniyor...")
-            subprocess.run(['sudo', 'mv', latest_backup_path, sources_path], check=True)
-            logger.info(f"[DEFAULT] '{sources_path}' başarıyla yedeğinden geri yüklendi. Paket listesi güncelleniyor...")
-            subprocess.run(['sudo', 'apt-get', 'update'], check=True, capture_output=True)
-            logger.info("[DEFAULT] Paket listesi başarıyla güncellendi.")
+            success, output = run_command(['sudo', 'mv', latest_backup_path, sources_path])
+            if not success:
+                logger.error(f"[DEFAULT] '{sources_path}' geri yüklenirken hata: {output}")
+            else:
+                logger.info(f"[DEFAULT] '{sources_path}' başarıyla yedeğinden geri yüklendi. Paket listesi güncelleniyor...")
+                run_command(['sudo', 'apt-get', 'update'])
+                logger.info("[DEFAULT] Paket listesi başarıyla güncellendi.")
         except Exception as e:
             logger.error(f"[DEFAULT] '{sources_path}' geri yüklenirken hata: {e}")
     else:
@@ -534,7 +537,9 @@ def revert_process_hardening():
         if os.path.exists(file_path):
             try:
                 logger.info(f"[DEFAULT] Sysctl kural dosyası '{file_path}' kaldırılıyor...")
-                subprocess.run(['sudo', 'rm', '-f', file_path], check=True)
+                success, output = run_command(['sudo', 'rm', '-f', file_path])
+                if not success:
+                    logger.error(f"[DEFAULT] '{file_path}' kaldırılırken hata: {output}")
                 changes_made = True
             except Exception as e:
                 logger.error(f"[DEFAULT] '{file_path}' kaldırılırken hata: {e}")
@@ -583,7 +588,10 @@ def revert_process_hardening():
                 temp_path = "/tmp/limits.conf.revert"
                 with open(temp_path, "w") as f:
                     f.writelines(new_lines)
-                subprocess.run(['sudo', 'mv', temp_path, limits_path], check=True)
+                success, output = run_command(['sudo', 'mv', temp_path, limits_path])
+                if not success:
+                    logger.error(f"[DEFAULT] '{limits_path}' geri alınamadı: {output}")
+                    return
                 logger.info(f"[DEFAULT] '{limits_path}' başarıyla temizlendi.")
             else:
                 logger.info(f"[DEFAULT] '{limits_path}' içinde core dump kuralı bulunamadı.")
@@ -619,7 +627,11 @@ def revert_file_permissions_and_ownership():
                 current_perms = oct(stat.S_IMODE(os.stat(file_path).st_mode))[-3:]
                 if current_perms != default_perm:
                     logger.info(f"[DEFAULT] '{file_path}' izinleri varsayılana ({default_perm}) döndürülüyor...")
-                    subprocess.run(['sudo', 'chmod', default_perm, file_path], check=True)
+                    success, output = run_command(['sudo', 'chmod', default_perm, file_path])
+                    if not success:
+                        logger.error(f"[DEFAULT] '{file_path}' izinleri güncellenirken hata: {output}")
+                        return
+                    logger.info(f"[DEFAULT] '{file_path}' izinleri başarıyla varsayılana döndürüldü.")
                 else:
                     logger.info(f"[DEFAULT] '{file_path}' izinleri zaten varsayılan durumda ({current_perms}).")
             except Exception as e:
@@ -670,7 +682,11 @@ def revert_file_permissions_and_ownership():
                 # Eğer mevcut izin, bizim bildiğimiz varsayılan izinden farklıysa düzelt
                 if current_perms != default_perm:
                     logger.info(f"[DEFAULT] '{file_path}' izinleri varsayılana ({default_perm}) döndürülüyor...")
-                    subprocess.run(['sudo', 'chmod', default_perm, file_path], check=True)
+                    success, output = run_command(['sudo', 'chmod', default_perm, file_path])
+                    if not success:
+                        logger.error(f"[DEFAULT] '{file_path}' izinleri güncellenirken hata: {output}")
+                        return
+                    logger.info(f"[DEFAULT] '{file_path}' izinleri başarıyla varsayılana döndürüldü.")
                 else:
                     logger.info(f"[DEFAULT] '{file_path}' izinleri zaten varsayılan durumda ({current_perms}).")
             except Exception as e:

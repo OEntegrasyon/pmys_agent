@@ -57,7 +57,9 @@ def apply_network_module_disabled(module_name: str) -> tuple[bool, str]:
             f.write(rule_content)
 
         # sudo ile dosyayı kalıcı yerine taşı
-        subprocess.run(['sudo', 'mv', temp_path, rule_path], check=True)
+        success, output = run_command(['sudo', 'mv', temp_path, rule_path])
+        if not success:
+            return False, f"Modül kural dosyası oluşturulamadı: {output}. 'sudoers' dosyasını kontrol edin."
 
         return True, f"{module_name} modülü başarıyla devre dışı bırakıldı."
     
@@ -126,17 +128,20 @@ def apply_wireless_modules_disable(modules_to_disable: set):
             f.writelines(rules)
             
         # Dosyayı sudo ile asıl yerine taşı
-        subprocess.run(['sudo', 'mv', temp_path, config_file], check=True)
+        success , output = run_command(['sudo', 'mv', temp_path, config_file])
+        if not success:
+            return False, f"Kablosuz modül kural dosyası oluşturulamadı: {output}. 'sudoers' dosyasını kontrol edin."
 
         # Mevcut yüklü modülleri sistemden kaldırmayı dene
         unloaded_modules = []
         for module in modules_to_disable:
             try:
-                subprocess.run(['sudo', 'modprobe', '-r', module], check=True, capture_output=True)
+                success, output = run_command(['sudo', 'modprobe', '-r', module])
+                if not success:
+                    return False, f"'{module}' modülü kaldırılamadı: {output}. 'sudoers' dosyasını kontrol edin."
                 unloaded_modules.append(module)
-            except subprocess.CalledProcessError:
-                print(f"UYARI: '{module}' modülü meşgul olduğu için kaldırılamadı. Yeniden başlatma sonrası devre dışı kalacaktır.")
-                pass
+            except Exception as e:
+                return False, f"'{module}' modülü kaldırılırken hata: {e}. 'sudoers' dosyasını kontrol edin."
         
         message = f"Kablosuz modüller ({', '.join(modules_to_disable)}) için devre dışı bırakma kuralı oluşturuldu."
         if unloaded_modules:
@@ -162,16 +167,20 @@ def disable_bluetooth_service(username, parameters):
     
     try:
         # Adım 1: Paket kurulu mu?
-        pkg_result = subprocess.run(['dpkg', '-l', package_name], capture_output=True, text=True, check=False)
+        success, output = run_command(['dpkg', '-l', package_name])
+        if not success:
+            return False, f"Paket durumu kontrol edilirken hata: {output}"
         
         # 'ii' (install ok installed) çıktıda yoksa, paket kurulu değildir. Bu en iyi durumdur.
-        if f"ii  {package_name}" not in pkg_result.stdout:
+        if f"ii  {package_name}" not in output:
             return True, f"'{package_name}' paketi sistemde kurulu değil (En güvenli durum)."
 
         # Adım 2: Paket kurulu ise, servis maskelenmiş mi?
         # 'is-enabled' komutu 'masked' sonucunu da döndürebilir.
-        enabled_check = subprocess.run(['systemctl', 'is-enabled', service_name], capture_output=True, text=True)
-        is_masked = "masked" in enabled_check.stdout.strip()
+        success, output = run_command(['systemctl', 'is-enabled', service_name])
+        if not success and "disabled" not in output:
+            return False, f"Bluetooth servisi durumu kontrol edilirken hata: {output}"
+        is_masked = "masked" in output.strip()
 
         if is_masked:
             return True, "Bluetooth servisi zaten maskelenmiş (devre dışı)."
@@ -192,23 +201,28 @@ def apply_bluetooth_disablement():
     
     try:
         # Adım 1: Servisi her ihtimale karşı durdur
-        subprocess.run(['sudo', 'systemctl', 'stop', service_name], check=False)
+        success, output = run_command(['sudo', 'systemctl', 'stop', service_name])
+        if not success:
+            return False, f"Bluetooth servisi durdurulurken hata: {output}. 'sudoers' dosyasını kontrol edin."
 
         # Adım 2: Paketi kaldırmayı (purge) dene. Bu en güvenli yöntemdir.
         print(f"'{package_name}' paketi kaldırılmaya çalışılıyor...")
-        purge_result = subprocess.run(
-            ['sudo', 'apt-get', 'purge', '-y', package_name],
-            check=True, capture_output=True, text=True
+        success, output = run_command(
+            ['sudo', 'apt-get', 'purge', '-y', package_name]
         )
+        if not success:
+            return False, f"'{package_name}' paketi kaldırılırken hata: {output}. 'sudoers' dosyasını kontrol edin."
         return True, f"'{package_name}' paketi ve yapılandırma dosyaları başarıyla kaldırıldı."
 
-    except subprocess.CalledProcessError:
+    except Exception as e:
         # Eğer 'purge' başarısız olursa (genellikle başka bir paket bağımlı olduğu için),
         # bu durum 'except' bloğunu tetikler. Şimdi alternatif yöntemi uygularız.
         print(f"'{package_name}' paketi kaldırılamadı (muhtemelen başka bir pakete bağımlı). Servis maskeleniyor...")
         try:
             # Adım 3 (Alternatif): Servisi maskele. Bu, 'disable'dan daha güçlüdür.
-            subprocess.run(['sudo', 'systemctl', 'mask', '--now', service_name], check=True)
+            success, output = run_command(['sudo', 'systemctl', 'mask', '--now', service_name])
+            if not success:
+                return False, f"Bluetooth servisi maskelenirken hata: {output}. 'sudoers' dosyasını kontrol edin."
             return True, "Bluetooth servisi başarıyla durduruldu ve maskelendi."
         except Exception as e:
             return False, f"Bluetooth servisi maskelenirken hata: {e}"
@@ -264,19 +278,18 @@ def configure_sysctl_parameter(username, parameters):
 
     try:
         # Mevcut sysctl değerini oku
-        result = subprocess.run(['sysctl', sysctl_key], capture_output=True, text=True, check=True)
+        success, output = run_command(['sysctl', sysctl_key])
+        if not success:
+            return False, f"sysctl '{sysctl_key}' kontrol edilirken hata: {output}"
         # Çıktı formatı: 'net.ipv4.ip_forward = 0' şeklindedir.
-        current_value = result.stdout.strip().split('=')[-1].strip()
+        current_value = output.strip().split('=')[-1].strip()
 
         if current_value == str(expected_value):
             return True, f"'{sysctl_key}' değeri zaten '{expected_value}' olarak doğru ayarlanmış."
         else:
             # Değer farklıysa, apply fonksiyonunu çağır.
             return apply_sysctl_parameter(sysctl_key, str(expected_value))
-            
-    except subprocess.CalledProcessError:
-        # Anahtar hiç var olmayabilir, bu durumda oluşturmayı deneriz.
-        return apply_sysctl_parameter(sysctl_key, str(expected_value))
+      
     except Exception as e:
         return False, f"sysctl '{sysctl_key}' kontrolünde hata: {e}"
 
@@ -297,11 +310,15 @@ def apply_sysctl_parameter(key: str, value: str) -> tuple[bool, str]:
             f.write(config_content)
         
         # Dosyayı sudo ile kalıcı yerine taşı
-        subprocess.run(['sudo', 'mv', temp_path, config_path], check=True)
+        success, output = run_command(['sudo', 'mv', temp_path, config_path])
+        if not success:
+            return False, f"Geçici dosya taşınırken hata: {output}. 'sudoers' dosyasını kontrol edin."
 
         # Değeri anında sisteme uygula
-        subprocess.run(['sudo', 'sysctl', '-p', config_path], check=True)
-        
+        success, output = run_command(['sudo', 'sysctl', '-p', config_path])
+        if not success:
+            return False, f"sysctl '{key}' uygulanırken hata: {output}. 'sudoers' dosyasını kontrol edin."
+
         return True, f"'{key}' değeri başarıyla '{value}' olarak ayarlandı."
 
     except Exception as e:

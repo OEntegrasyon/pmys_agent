@@ -29,8 +29,8 @@ def ensure_apparmor_is_installed_and_active(username, parameters):
         
         # 2. Servisin aktif olup olmadığını kontrol et
         service_active = False
-        result = subprocess.run(['systemctl', 'is-active', 'apparmor'], capture_output=True, text=True, check=False)
-        if result.stdout.strip() == "active":
+        success, output = run_command(['systemctl', 'is-active', 'apparmor'])
+        if success and output == "active":
             service_active = True
 
         if packages_installed and service_active:
@@ -47,21 +47,22 @@ def apply_apparmor_installation_and_activation():
     AppArmor paketlerini kurar ve servisi etkinleştirip başlatır.
     """
     required_packages = ["apparmor", "apparmor-utils"]
-    try:
-        # Önce apt depolarını güncelle
-        subprocess.run(['sudo', 'apt-get', 'update'], check=True, capture_output=True)
-        # Eksik paketleri kur
-        subprocess.run(['sudo', 'apt-get', 'install', '-y'] + required_packages, check=True, capture_output=True)
-        
-        # Servisi etkinleştir (enable) ve hemen başlat (start)
-        subprocess.run(['sudo', 'systemctl', 'enable', '--now', 'apparmor'], check=True)
 
-        return True, "AppArmor paketleri başarıyla kuruldu ve servis etkinleştirildi."
-    except subprocess.CalledProcessError as e:
-        error_message = e.stderr or e.stdout
-        return False, f"AppArmor kurulumu/etkinleştirmesi sırasında hata: {error_message}. sudoers dosyasını kontrol edin."
-    except Exception as e:
-        return False, f"AppArmor kurulumu/etkinleştirmesi uygulanırken genel hata: {e}"
+    # Önce apt depolarını güncelle
+    success, output = run_command(['sudo', 'apt-get', 'update'])
+    if not success:
+        return False, f"apt-get update başarısız oldu: {output}"
+        
+    # Eksik paketleri kur
+    success, output = run_command(['sudo', 'apt-get', 'install', '-y'] + required_packages)
+    if not success:
+        return False, f"AppArmor paketleri kurulamadı: {output}"
+    # Servisi etkinleştir (enable) ve hemen başlat (start)
+    success, output = run_command(['sudo', 'systemctl', 'enable', '--now', 'apparmor'])
+    if not success:
+        return False, f"AppArmor servisi etkinleştirilemedi: {output}"
+
+    return True, "AppArmor paketleri başarıyla kuruldu ve servis etkinleştirildi."
 
 # ------------------------------------------------------------------------------
 # Politika 2: AppArmor'u Önyükleyicide Etkinleştir
@@ -113,15 +114,18 @@ def apply_apparmor_to_grub(config_path, current_content, current_cmdline):
             f.write(new_content)
 
         # Değişiklikleri sudo ile uygula
-        subprocess.run(['sudo', 'mv', temp_path, config_path], check=True)
+        success, output = run_command(['sudo', 'mv', temp_path, config_path])
+        if not success:
+            return False, f"GRUB yapılandırma dosyası güncellenemedi: {output}"
         # GRUB'u güncelle! Bu adım kritik.
-        subprocess.run(['sudo', 'update-grub'], check=True)
+        success, output = run_command(['sudo', 'update-grub'])
+        if not success:
+            return False, f"GRUB güncellenirken hata: {output}"
 
         return True, "AppArmor, GRUB yapılandırmasında başarıyla etkinleştirildi. Değişikliklerin geçerli olması için yeniden başlatma gerekir."
     except subprocess.CalledProcessError as e:
         return False, f"GRUB güncellenirken hata: {e}. sudoers dosyasını kontrol edin."
-    except Exception as e:
-        return False, f"GRUB yapılandırması uygulanırken hata: {e}"
+
 
 # ------------------------------------------------------------------------------
 # Politika 3: Tüm AppArmor Profillerini Enforce veya Complain Moduna Al
@@ -155,16 +159,16 @@ def apply_reenable_all_profiles():
         for profile_link in disabled_profiles:
             full_path = os.path.join(disable_dir, profile_link)
             print(f"'{profile_link}' profili yeniden etkinleştiriliyor...")
-            subprocess.run(['sudo', 'rm', full_path], check=True)
+            success, output = run_command(['sudo', 'rm', full_path])
+            if not success:
+                return False, f"'{profile_link}' profilini yeniden etkinleştirirken hata: {output}"
         
         # AppArmor servisini yeniden yükleyerek değişiklikleri aktif et
-        subprocess.run(['sudo', 'service', 'apparmor', 'reload'], check=True)
-        
-        return True, f"Devre dışı bırakılmış profiller ({', '.join(disabled_profiles)}) başarıyla yeniden etkinleştirildi."
+        success, output = run_command(['sudo', 'service', 'apparmor', 'reload'])
+        if not success:
+            return False, f"AppArmor servisi yeniden yüklenirken hata: {output}"
 
-    except subprocess.CalledProcessError as e:
-        error_message = e.stderr or e.stdout
-        return False, f"Profiller yeniden etkinleştirilirken hata: {error_message}. sudoers dosyasını kontrol edin."
+        return True, f"Devre dışı bırakılmış profiller ({', '.join(disabled_profiles)}) başarıyla yeniden etkinleştirildi."
     except Exception as e:
         return False, f"Profiller yeniden etkinleştirilirken genel hata: {e}"
 # ------------------------------------------------------------------------------
@@ -176,19 +180,18 @@ def set_apparmor_profiles_to_enforce(username, parameters):
     # Bu politika parametre gerektirmez.
     try:
         # aa-status komutunu sudo ile çalıştır
-        status_result = subprocess.run(['sudo', 'aa-status'], capture_output=True, text=True, check=True)
+        success, output = run_command(['sudo', 'aa-status'])
+        if not success:
+            return False, f"aa-status komutu çalıştırılamadı: {output}. sudoers dosyasını kontrol edin."
         
         # 'complain mode' içinde profil var mı diye kontrol et
-        complain_section = re.search(r'(\d+)\s+profiles are in complain mode.', status_result.stdout)
-        
+        complain_section = re.search(r'(\d+)\s+profiles are in complain mode.', output)
+
         if complain_section and int(complain_section.group(1)) > 0:
             # Complain modunda profil varsa, apply fonksiyonunu çağır
             return apply_enforce_all_profiles()
         else:
             return True, "Tüm AppArmor profilleri zaten 'enforce' modunda veya hiç 'complain' modunda profil yok."
-
-    except subprocess.CalledProcessError as e:
-        return False, f"aa-status komutu çalıştırılamadı: {e.stderr}. sudoers dosyasını kontrol edin."
     except Exception as e:
         return False, f"AppArmor profil durumu kontrol edilirken hata: {e}"
 
@@ -196,11 +199,10 @@ def apply_enforce_all_profiles():
     """
     Tüm profilleri enforce moduna alır.
     """
-    try:
-        # aa-enforce komutu ile tüm profilleri enforce moduna al
-        subprocess.run(['sudo', 'aa-enforce', '/etc/apparmor.d/*'], capture_output=True, text=True, check=True)
-        return True, "Tüm 'complain' modundaki profiller başarıyla 'enforce' moduna alındı."
-    except subprocess.CalledProcessError as e:
-        return False, f"Profiller 'enforce' moduna alınırken hata: {e.stderr}. sudoers dosyasını kontrol edin."
-    except Exception as e:
-        return False, f"AppArmor profilleri enforce edilirken hata: {e}"
+
+    # aa-enforce komutu ile tüm profilleri enforce moduna al
+    success , output= run_command(['sudo', 'aa-enforce', '/etc/apparmor.d/*'])
+    if not success:
+        return False, f"Profiller 'enforce' moduna alınırken hata: {output}. sudoers dosyasını kontrol edin."
+    return True, "Tüm 'complain' modundaki profiller başarıyla 'enforce' moduna alındı."
+

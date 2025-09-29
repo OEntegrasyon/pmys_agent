@@ -32,9 +32,15 @@ def apply_tmp_as_tmpfs():
     backup_path = f"/etc/fstab.bak_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     tmpfs_line = "\n# PMYS Agent tarafindan eklendi: /tmp icin tmpfs\ntmpfs /tmp tmpfs defaults,rw,nosuid,nodev,noexec,size=2G 0 0\n"
     try:
-        subprocess.run(['sudo', 'cp', fstab_path, backup_path], check=True)
-        subprocess.run(f"sudo sh -c 'echo \"{tmpfs_line}\" >> {fstab_path}'", shell=True, check=True)
-        subprocess.run(['sudo', 'mount', '-a'], check=True)
+        success, output = run_command(['sudo', 'cp', fstab_path, backup_path])
+        if not success:
+            return False, f"fstab yedekleme başarısız oldu: {output}. 'sudoers' dosyasını kontrol edin."
+        success, output = run_command(f"sudo sh -c 'echo \"{tmpfs_line}\" >> {fstab_path}'", shell=True)
+        if not success:
+            return False, f"fstab güncelleme başarısız oldu: {output}. 'sudoers' dosyasını kontrol edin."
+        success, output = run_command(['sudo', 'mount', '-a'])
+        if not success:
+            return False, f"fstab mount işlemi başarısız oldu: {output}. 'sudoers' dosyasını kontrol edin."
         return True, "/tmp ayrı bir bölümde değildi. tmpfs olarak başarıyla yapılandırıldı ve aktif edildi."
     except Exception as e:
         return False, f"tmpfs uygulanırken hata: {e}. 'sudoers' dosyasını kontrol edin."
@@ -83,8 +89,10 @@ def enforce_mount_option(username, parameters):
     if not mount_point or not mount_option:
         return False, "Politika hatası: 'mount_point' ve 'mount_option' parametreleri zorunludur."
     try:
-        result = subprocess.run(['findmnt', '-n', '-o', 'OPTIONS', '--target', mount_point], capture_output=True, text=True)
-        current_options = result.stdout.strip()
+        success , output = run_command(['findmnt', '-n', '-o', 'OPTIONS', '--target', mount_point])
+        if not success:
+            return False, f"Mount noktası kontrol edilirken hata: {output}"
+        current_options = output.strip()
         if mount_option in current_options.split(','):
             return True, f"'{mount_point}' için '{mount_option}' seçeneği zaten aktif."
         else:
@@ -127,9 +135,17 @@ def apply_mount_option(mount_point: str, mount_option: str) -> tuple[bool, str]:
         with open(temp_path, "w") as f: f.writelines(new_lines)
 
         backup_path = f"/etc/fstab.bak_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        subprocess.run(['sudo', 'cp', fstab_path, backup_path], check=True)
-        subprocess.run(['sudo', 'mv', temp_path, fstab_path], check=True)
-        subprocess.run(['sudo', 'mount', '-o', 'remount', mount_point], check=True)
+        success, output = run_command(['sudo', 'cp', fstab_path, backup_path])
+        if not success:
+            return False, f"fstab yedekleme başarısız oldu: {output}. 'sudoers' dosyasını kontrol edin."
+
+        success, output = run_command(['sudo', 'mv', temp_path, fstab_path])
+        if not success:
+            return False, f"fstab güncelleme başarısız oldu: {output}. 'sudoers' dosyasını kontrol edin."
+
+        success, output = run_command(['sudo', 'mount', '-o', 'remount', mount_point])
+        if not success:
+            return False, f"fstab mount işlemi başarısız oldu: {output}. 'sudoers' dosyasını kontrol edin."
 
         return True, f"'{mount_point}' için '{mount_option}' seçeneği başarıyla eklendi ve sistem yeniden mount edildi."
     except Exception as e:

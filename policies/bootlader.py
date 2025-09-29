@@ -66,11 +66,17 @@ EOF
             f.write(content)
         
         # Dosyayı sudo ile taşı
-        subprocess.run(['sudo', 'mv', temp_path, auth_file_path], check=True)
+        success, output = run_command(['sudo', 'mv', temp_path, auth_file_path])
+        if not success:
+            return False, f"Yetkilendirme dosyası oluşturulamadı: {output}"
         # Dosyayı çalıştırılabilir yap
-        subprocess.run(['sudo', 'chmod', '+x', auth_file_path], check=True)
+        success, output = run_command(['sudo', 'chmod', '+x', auth_file_path])
+        if not success:
+            return False, f"Yetkilendirme dosyası çalıştırılabilir yapılamadı: {output}"
         # GRUB'u güncelle
-        subprocess.run(['sudo', 'update-grub'], check=True)
+        success, output = run_command(['sudo', 'update-grub'])
+        if not success:
+            return False, f"GRUB güncellenemedi: {output}"
 
         return True, "GRUB parolası başarıyla ayarlandı ve GRUB güncellendi. Yeniden başlatma sonrası aktif olacaktır."
 
@@ -79,7 +85,7 @@ EOF
     except Exception as e:
         return False, f"Bootloader parolası uygulanırken hata: {e}"
 
-# ------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------
 
 #  Bootloader Yapılandırma İzinlerini Sıkılaştır
 def harden_bootloader_permissions(username, parameters):
@@ -114,12 +120,14 @@ def apply_bootloader_permissions(path: str):
     """
     try:
         # Sahibi root:root yap
-        subprocess.run(['sudo', 'chown', 'root:root', path], check=True)
+        success, output = run_command(['sudo', 'chown', 'root:root', path])
+        if not success:
+            return False, f"Dosya sahibi değiştirilemedi: {output}"
         # İzinleri 600 (sadece root okur/yazar) yap
-        subprocess.run(['sudo', 'chmod', '600', path], check=True)
+        success, output = run_command(['sudo', 'chmod', '600', path])
+        if not success:
+            return False, f"Dosya izinleri değiştirilemedi: {output}"
         return True, f"{path} dosyasının sahibi root:root ve izinleri 600 olarak ayarlandı."
-    except subprocess.CalledProcessError as e:
-        return False, f"chown/chmod komutlarında hata: {e}. 'sudoers' dosyasını kontrol edin."
     except Exception as e:
         return False, f"Bootloader izinleri uygulanırken hata: {e}"
 

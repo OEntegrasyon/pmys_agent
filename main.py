@@ -43,7 +43,7 @@ def on_policy_received(channel, method, properties, body):
         username = data.get("username", "unknown")
         if username == user:
             for policy in data.get("policies", []):
-                policy_type = policy.get("policy_type_name", "unknown")
+                policy_type = policy.get("policy_type__name", "unknown")
                 policy_parameters = policy.get("parameters", {})
                 logger.info(f"[on_policy_received] Politika alındı: {policy_type} for {username}, Parametreler: {policy_parameters}")
                 

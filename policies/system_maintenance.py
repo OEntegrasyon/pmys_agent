@@ -65,14 +65,17 @@ def apply_file_permissions(parameters):
 
     try:
         # Sahip ve grubu tek komutta ayarla
-        subprocess.run(['sudo', 'chown', f'{owner}:{group}', file_path], check=True)
+        success, output = run_command(['sudo', 'chown', f'{owner}:{group}', file_path])
+        if not success:
+            return False, f"Sahip ve grup ayarlanırken hata: {output}. 'sudoers' dosyasını kontrol edin."
+
         # İzinleri ayarla
-        subprocess.run(['sudo', 'chmod', permissions, file_path], check=True)
+        success, output = run_command(['sudo', 'chmod', permissions, file_path])
+        if not success:
+            return False, f"İzinler ayarlanırken hata: {output}. 'sudoers' dosyasını kontrol edin."
 
         return True, f"'{file_path}' için sahiplik ve izinler başarıyla ayarlandı."
-
-    except subprocess.CalledProcessError as e:
-        return False, f"chown/chmod komutlarında hata: {e}. 'sudoers' dosyasını kontrol edin."
+  
     except Exception as e:
         return False, f"Dosya izinleri uygulanırken genel hata: {e}"
 
@@ -91,10 +94,12 @@ def secure_world_writable_files_and_dirs(username, parameters):
     try:
         # Önce herkese yazma izni olan (-perm -0002) tüm dosya ve dizinleri bulalım
         find_cmd = ['find', '/', '-xdev', '-type', 'f', '-perm', '-0002', '-not', '-path', '/etc/mtab', '-print']
-        result = subprocess.run(find_cmd, capture_output=True, text=True)
-        
-        all_ww_items = result.stdout.strip().splitlines()
-        
+        success, output = run_command(find_cmd)
+        if not success:
+            return False, f"World-writable dosyalar bulunurken hata: {output}"
+
+        all_ww_items = output.strip().splitlines()
+
         if not all_ww_items:
             return True, "Sistemde herkese yazma izni olan dosya veya dizin bulunmuyor."
 
@@ -128,19 +133,21 @@ def apply_secure_world_writable_permissions(files_to_fix: list, dirs_to_fix: lis
         # Dosyaların 'other' yazma iznini kaldır (chmod o-w)
         if files_to_fix:
             for file_path in files_to_fix:
-                subprocess.run(['sudo', 'chmod', 'o-w', file_path], check=True)
+                success, output = run_command(['sudo', 'chmod', 'o-w', file_path])
+                if not success:
+                    errors.append(f"{file_path}: {output}")
             messages.append(f"{len(files_to_fix)} adet dosyanın herkese yazma izni kaldırıldı.")
 
         # Dizinlere sticky bit ekle (chmod a+t)
         if dirs_to_fix:
             for dir_path in dirs_to_fix:
-                subprocess.run(['sudo', 'chmod', 'a+t', dir_path], check=True)
+                success, output = run_command(['sudo', 'chmod', 'a+t', dir_path])
+                if not success:
+                    errors.append(f"{dir_path}: {output}")
             messages.append(f"{len(dirs_to_fix)} adet dizine 'sticky bit' eklendi.")
-        
-        return True, " ".join(messages)
 
-    except subprocess.CalledProcessError as e:
-        return False, f"İzinler düzeltilirken komut hatası: {e}. 'sudoers' dosyasını kontrol edin."
+        return True, " ".join(messages)
+   
     except Exception as e:
         return False, f"İzinler uygulanırken genel hata: {e}"
 
@@ -152,10 +159,12 @@ def audit_and_fix_unowned_files(username, parameters):
     """
     try:
         find_cmd = ['find', '/', '-xdev', '-nouser', '-o', '-nogroup', '-print']
-        result = subprocess.run(find_cmd, capture_output=True, text=True, check=False)
-        
-        unowned_files = result.stdout.strip().splitlines()
-        
+        success, output = run_command(find_cmd)
+        if not success:
+            return False, f"Sahipsiz dosyalar bulunurken hata: {output}"
+
+        unowned_files = output.strip().splitlines()
+
         if not unowned_files:
             return True, "Uyumlu: Sistemde sahibi veya grubu olmayan dosya bulunmuyor."
 
@@ -186,7 +195,9 @@ def apply_fix_unowned_files(file_list: list, parameters: dict):
             new_group = parameters.get("new_group", "root") # Varsayılan: root
             
             for file_path in file_list:
-                subprocess.run(['sudo', 'chown', f'{new_owner}:{new_group}', file_path], check=True)
+                success, output = run_command(['sudo', 'chown', f'{new_owner}:{new_group}', file_path])
+                if not success:
+                    return False, f"Sahipsiz dosya sahibi değiştirilemedi: {output}. 'sudoers' dosyasını kontrol edin."
             
             return True, f"{len(file_list)} adet sahipsiz dosyanın sahibi başarıyla '{new_owner}:{new_group}' olarak değiştirildi."
 
@@ -194,14 +205,14 @@ def apply_fix_unowned_files(file_list: list, parameters: dict):
             # BU İŞLEM GERİ ALINAMAZ, DİKKATLİ KULLANIN!
             for file_path in file_list:
                 # Hem dosya hem de dizinleri silebilmek için -rf kullanıyoruz
-                subprocess.run(['sudo', 'rm', '-rf', file_path], check=True)
+                success, output = run_command(['sudo', 'rm', '-rf', file_path])
+                if not success:
+                    return False, f"Sahipsiz dosya silinemedi: {output}. 'sudoers' dosyasını kontrol edin."
 
             return True, f"DİKKAT: {len(file_list)} adet sahipsiz dosya sistemden kalıcı olarak silindi."
 
         else:
             return False, f"Geçersiz eylem belirtildi: {action}. Sadece 'chown' veya 'delete' kullanılabilir."
 
-    except subprocess.CalledProcessError as e:
-        return False, f"Eylem '{action}' uygulanırken komut hatası: {e}. 'sudoers' dosyasını kontrol edin."
     except Exception as e:
         return False, f"Eylem '{action}' uygulanırken genel hata: {e}"
