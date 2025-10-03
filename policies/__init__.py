@@ -17,7 +17,8 @@ from .bootlader import (
 )
 
 from .client_services import (
-    ensure_package_is_removed
+    ensure_package_is_removed,
+    check_automount_block 
 )
 
 from .filesystem_kernels import (
@@ -36,13 +37,16 @@ from .network import (
     disable_wireless_interfaces,
     disable_bluetooth_service,
     check_ipv6_status,
-    configure_sysctl_parameter
+    configure_sysctl_parameter,
+    check_network_configuration
 )
 
 from .package_managment import (
     check_secure_apt_repositories,
     audit_gpg_keys,
-    enable_pardus_automatic_updates
+    enable_pardus_automatic_updates,
+    check_package_pinning,
+    check_required_software
 )
 
 from .process_hardening import (
@@ -54,5 +58,17 @@ from .process_hardening import (
 from .system_maintenance import (
     enforce_file_permissions,
     secure_world_writable_files_and_dirs,
-    audit_and_fix_unowned_files
+    audit_and_fix_unowned_files,
+    check_shared_directory_permissions
+)
+
+from .sudo import (
+    check_restrict_sudo_commands,    
+    check_nopasswd_sudo_commands,    
+    check_user_management_privileges,
+    check_sudo_logfile_config
+    )
+
+from .firewall import (
+    configure_secure_firewall
 )

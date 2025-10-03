@@ -210,3 +210,125 @@ exit 0
   
     except Exception as e:
         return False, f"Güncelleme betiği uygulanırken genel hata: {e}"
+    
+
+# ==============================================================================
+# Paket Sürüm Sabitleme
+
+def check_package_pinning(username, parameters):
+    try:
+        package_name = parameters.get("package")
+        version = parameters.get("version")
+
+        if not package_name or not version:
+            return False, "Paket adı veya sürüm belirtilmedi."
+
+        success , output = run_command(["apt-cache", "policy", package_name])
+
+        if "1001" in output and version in output:
+            return True, f"{package_name} paketi zaten {version} sürümüne sabitlenmiş."
+        else:
+            return apply_package_pinning(parameters)
+         
+    except Exception as e:
+        return False, f"Hata: {str(e)}"
+
+
+
+def apply_package_pinning(parameters):
+    try:
+        package_name = parameters.get("package")
+        version = parameters.get("version")
+
+        if not package_name or not version:
+            return False, "Paket adı veya sürüm belirtilmedi."
+
+        # Pinleme dosyası oluştur
+        pin_file = f"/etc/apt/preferences.d/{package_name}.pref"
+        with open(pin_file, "w") as f:
+            f.write(f"Package: {package_name}\n")
+            f.write(f"Pin: version {version}\n")
+            f.write(f"Pin-Priority: 1001\n")
+
+        # Paketi kilitle
+        subprocess.run(["apt-mark", "hold", package_name], check=True)
+
+        # Pinleme başarı kontrolü
+        success, output=run_command(["apt-cache", "policy", package_name])
+
+        if "1001" in output and version in output:
+            return True, f"{package_name} paketi {version} sürümüne sabitlendi ve güncellemesi engellendi."
+        else:
+            return False, f"{package_name} için pinleme başarısız. Elle kontrol ediniz."
+    except Exception as e:
+        return False, f"Hata: {str(e)}"
+    
+# ==============================================================================
+
+
+def check_required_software(username, parameters):
+    """
+    Politika parametrelerinde belirtilen 'required' paketlerin sistemde kurulu olup olmadığını kontrol eder.
+    Eksik paketler varsa, kurulum için apply fonksiyonunu tetikler.
+    """
+    required_param = parameters.get("required", [])
+    if isinstance(required_param, str):
+        # Eğer string ise, tek elemanlı bir listeye çevir
+        required_packages = [required_param]
+    elif isinstance(required_param, list):
+        # Zaten liste ise, olduğu gibi kullan
+        required_packages = required_param
+    else:
+        # Başka bir tip ise hata ver
+        return False, f"Hata: 'required' parametresi bir metin (string) veya liste (array) olmalıdır. Gelen tip: {type(required_param)}"
+    
+    
+    if not required_packages:
+        return True, "Kurulum için belirtilmiş bir paket listesi bulunmuyor."
+
+    missing_packages = []
+    try:
+        for package in required_packages:
+            # run_command ile paketin durumunu kontrol et
+            success, output = run_command(["dpkg", "-l", package])
+            # Komut başarısız olduysa veya çıktıda 'ii' (installed) durumu yoksa, paketi eksik olarak işaretle
+            if not success or f"ii  {package}" not in output:
+                missing_packages.append(package)
+
+        # Eksik paket yoksa politika başarılıdır
+        if not missing_packages:
+            return True, "Gerekli tüm yazılımlar zaten kurulu."
+        
+        # Eksik paketler varsa apply fonksiyonunu çağır
+        return apply_required_software(missing_packages)
+        
+    except Exception as e:
+        return False, f"Yazılım kontrolü sırasında hata oluştu: {str(e)}"
+
+def apply_required_software(missing_packages):
+    """
+    Eksik olan paketlerin kurulumunu 'sudo apt-get install' komutuyla gerçekleştirir.
+    """
+    messages = []
+    
+    # Kuruluma başlamadan önce depo listesini güncellemek iyi bir pratiktir.
+    update_success, update_output = run_command(["sudo", "apt-get", "update"])
+    if not update_success:
+        return False, f"apt-get update başarısız oldu: {update_output}"
+
+    try:
+        for package in missing_packages:
+            # Her bir eksik paketi kurmak için run_command kullan
+            # Kurulum işlemleri için 'sudo' ve 'apt-get' kullanıldı
+            install_success, install_output = run_command(["sudo", "apt-get", "install", "-y", package])
+            
+            if install_success:
+                messages.append(f"'{package}' başarıyla yüklendi.")
+            else:
+                messages.append(f"'{package}' yüklenemedi. Hata: {install_output}")
+
+        # Tüm işlemlerin sonucunu tek bir mesajda birleştir
+        return True, " ".join(messages)
+        
+    except Exception as e:
+        return False, f"Yazılım kurulumu sırasında hata oluştu: {str(e)}"

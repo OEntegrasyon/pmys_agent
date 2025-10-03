@@ -579,58 +579,7 @@ def apply_required_software(parameters, missing_packages, existing_forbidden):
         return False, f"Hata oluştu: {str(e)}"
     
 
-# Paket Sürüm Sabitleme
-
-def check_package_pinning(username, parameters):
-    try:
-        package_name = parameters.get("package")
-        version = parameters.get("version")
-
-        if not package_name or not version:
-            return False, "Paket adı veya sürüm belirtilmedi."
-
-        result = subprocess.run(["apt-cache", "policy", package_name], capture_output=True, text=True)
-
-        if "1001" in result.stdout and version in result.stdout:
-            return True, f"{package_name} paketi zaten {version} sürümüne sabitlenmiş."
-        else:
-            return apply_package_pinning(parameters)
-         
-    except Exception as e:
-        return False, f"Hata: {str(e)}"
-
-
-
-def apply_package_pinning(parameters):
-    try:
-        package_name = parameters.get("package")
-        version = parameters.get("version")
-
-        if not package_name or not version:
-            return False, "Paket adı veya sürüm belirtilmedi."
-
-        # Pinleme dosyası oluştur
-        pin_file = f"/etc/apt/preferences.d/{package_name}.pref"
-        with open(pin_file, "w") as f:
-            f.write(f"Package: {package_name}\n")
-            f.write(f"Pin: version {version}\n")
-            f.write(f"Pin-Priority: 1001\n")
-
-        # Paketi kilitle
-        subprocess.run(["apt-mark", "hold", package_name], check=True)
-
-        # Pinleme başarı kontrolü
-        result = subprocess.run(["apt-cache", "policy", package_name], capture_output=True, text=True)
-
-        if "1001" in result.stdout and version in result.stdout:
-            return True, f"{package_name} paketi {version} sürümüne sabitlendi ve güncellemesi engellendi."
-        else:
-            return False, f"{package_name} için pinleme başarısız. Elle kontrol ediniz."
-
-    except subprocess.CalledProcessError as e:
-        return False, f"Komut hatası: {str(e)}"
-    except Exception as e:
-        return False, f"Hata: {str(e)}"
+ 
     
 # Paket İmzaların doğrulanması
 

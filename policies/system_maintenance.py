@@ -216,3 +216,52 @@ def apply_fix_unowned_files(file_list: list, parameters: dict):
 
     except Exception as e:
         return False, f"Eylem '{action}' uygulanırken genel hata: {e}"
+
+# ==============================================================================
+
+# Paylaşılan dizinlerin izinleri
+
+def check_shared_directory_permissions(username, parameters):
+    directory = parameters.get('directory')
+    expected_owner = parameters.get('owner')
+    expected_group = parameters.get('group')
+    expected_permissions = parameters.get('permissions')  # Örn: '770'
+
+    if not directory or not expected_owner or not expected_group or not expected_permissions:
+        return False, "Eksik parametre: directory, owner, group ve permissions gerekli."
+
+    try:
+        # Mevcut izin ve sahiplik kontrolü
+        stat_info = os.stat(directory)
+        current_owner = subprocess.getoutput(f'stat -c %U {directory}')
+        current_group = subprocess.getoutput(f'stat -c %G {directory}')
+        current_permissions = oct(stat_info.st_mode)[-3:]
+
+        if (current_owner != expected_owner or
+            current_group != expected_group or
+            current_permissions != expected_permissions):           
+            return apply_shared_directory_permissions(parameters)
+        else:
+            return True, "Dizin sahipliği ve izinler zaten doğru ayarlanmış."
+    except Exception as e:
+        return False, f"Hata: {str(e)}"
+
+def apply_shared_directory_permissions(parameters):
+    directory = parameters.get('directory')
+    expected_owner = parameters.get('owner')
+    expected_group = parameters.get('group')
+    expected_permissions = parameters.get('permissions')  # Örn: '770'
+
+    try:
+        # Sahip ve grup değiştirme
+        subprocess.run(['chown', f'{expected_owner}:{expected_group}', directory], check=True)
+        # İzinleri değiştirme
+        subprocess.run(['chmod', expected_permissions, directory], check=True)
+
+        return True, "Dizin sahipliği ve izinler başarıyla güncellendi."
+
+    except subprocess.CalledProcessError as e:
+        return False, f"Komut hatası: {str(e)}"
+    except Exception as e:
+        return False, f"Hata: {str(e)}"
+# ==============================================================================

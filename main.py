@@ -36,9 +36,7 @@ def login_detection(conn_params, uuid):
 def on_policy_received(channel, method, properties, body):
     user = get_logged_in_user()
     data = json.loads(body)
-    
-    # DÜZELTME: Mesaj işlendikten sonra her durumda onay gönderilmesi için
-    # basic_ack'i döngüden sonra ve en sona taşıyoruz.
+
     try:
         username = data.get("username", "unknown")
         if username == user:
@@ -56,21 +54,18 @@ def on_policy_received(channel, method, properties, body):
                     logger.error(f"[on_policy_received] Politika uygulanamadı: {policy_type} for {username}, Hata: {result_msg}")
     
     finally:
-        # Bu blok, yukarıda bir hata olsa bile çalışır.
-        # Bu sayede bozuk mesajlar bile işlenmiş kabul edilir ve kuyruktan silinir.
+
         channel.basic_ack(delivery_tag=method.delivery_tag)
 
 def apply_policy(username, policy_type, parameters):
     policy_function = getattr(policies, policy_type, None)
     
-    # DÜZELTME: Fonksiyonu çağırmadan önce var olup olmadığını kontrol et.
     if policy_function is None:
         error_msg = f"Tanımsız veya bulunamayan politika tipi: '{policy_type}'"
         logger.error(f"[apply_policy] {error_msg}")
         return False, error_msg
 
     logger.info(f"[apply_policy] Politika tipi: {policy_type}, Parametreler: {json.dumps(parameters)}")
-    # Hata kontrolü, her bir politika fonksiyonunun kendi içine (try/except) eklenmeli.
     try:
         return policy_function(username, parameters)
     except Exception as e:
