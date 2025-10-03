@@ -3,7 +3,8 @@ import pika, json, os
 import uuid as uuidlib
 from logger import logger
 from configparser import ConfigParser
-import sys
+import sys, glob, pwd, grp
+
 
 def get_base_path():
     if getattr(sys, 'frozen', False):
@@ -32,6 +33,7 @@ def get_connection_parameters():
         heartbeat=60
     )
     return uuid, conn_params, config, config_file
+
 def get_ip_address():
     result = subprocess.run(['hostname', '-I'], capture_output=True, text=True, check=True)
     ip_address = result.stdout.strip().split()[0]
@@ -236,3 +238,116 @@ def run_command(cmd, timeout=30):
         msg = f"Komut çalıştırma hatası: {str(e)}"
         logger.error(f"[run_command] {msg}")
         return False, msg
+
+
+def get_username(uid):
+    try:
+        return pwd.getpwuid(uid).pw_name
+    except KeyError:
+        return str(uid)
+
+
+def get_groupname(gid):
+    try:
+        return grp.getgrgid(gid).gr_name
+    except KeyError:
+        return str(gid)
+
+
+def get_include_paths():
+    """
+    /etc/ssh/sshd_config içindeki Include satırlarını oku
+    ve bulunan dosyaların tam listesini döndür.
+    """
+    include_paths = []
+    try:
+        with open("/etc/ssh/sshd_config", "r") as f:
+            for line in f:
+                line = line.strip()
+                if line.lower().startswith("include "):
+                    path = line.split(maxsplit=1)[1]
+                    include_paths.append(path)
+    except Exception:
+        pass
+
+    expanded_files = []
+    for path in include_paths:
+        expanded_files.extend(glob.glob(path))
+
+    return expanded_files
+
+
+def get_all_sshd_config_files():
+    """Kontrol edilecek tüm sshd config dosyalarını döndür."""
+    files_to_check = []
+
+    if os.path.exists("/etc/ssh/sshd_config"):
+        files_to_check.append("/etc/ssh/sshd_config")
+
+    # Default dizin
+    files_to_check.extend(glob.glob("/etc/ssh/sshd_config.d/*.conf"))
+
+    # Include ile eklenenler
+    files_to_check.extend(get_include_paths())
+
+    return files_to_check
+
+
+def detect_desktop_env_from_processes():
+    try:
+        output = subprocess.check_output("ps -e", shell=True).decode().lower()
+
+        if "xfce4-session" in output or "xfwm4" in output:
+            return "xfce"
+        elif "gnome-session" in output or "gnome-shell" in output:
+            return "gnome"
+        elif "ksmserver" in output or "plasma" in output:
+            return "kde"
+        elif "mate-session" in output:
+            return "mate"
+        elif "lxsession" in output:
+            return "lxde"
+        else:
+            return "bilinmiyor"
+    except Exception as e:
+        return "bilinmiyor"
+
+def get_display_and_dbus_env():
+    try:
+        session_output = subprocess.check_output("loginctl list-sessions --no-legend", shell=True).decode().strip()
+        for line in session_output.splitlines():
+            parts = line.split()
+            if len(parts) >= 2:
+                session_id = parts[0]
+                uid_str = parts[1]
+
+                try:
+                    uid = int(uid_str)
+                    if uid == 0:
+                        continue  # root'u atla
+
+                    user_info = subprocess.getoutput(f"getent passwd {uid}")
+                    if not user_info:
+                        with open("/tmp/debug_display_error.log", "a") as f:
+                            f.write(f"[get_display_and_dbus_env] UID için kullanıcı bulunamadı (getent): {uid}\n")
+                        continue
+
+                    user = user_info.split(":")[0]
+                    with open("/tmp/debug_display_1.log", "a") as f:
+                        f.write(f"[get_display_and_dbus_env] Kullanıcı: {user}, UID: {uid}\n")
+                    display = ":0"
+                    dbus = f"unix:path=/run/user/{uid}/bus"
+                    with open("/tmp/debug_display_2.log", "a") as f:
+                        f.write(f"[get_display_and_dbus_env] Display: {display}, DBus: {dbus}\n")
+                    test = subprocess.getoutput(f"sudo -u {user} DISPLAY={display} xprop -root")
+                    if "unable" not in test.lower() and "error" not in test.lower():
+                        return user, display, dbus
+
+                except Exception as e:
+                    with open("/tmp/debug_display_error.log", "a") as f:
+                        f.write(f"[get_display_and_dbus_env] Hata: {str(e)}\n")
+                    continue
+    except Exception as e:
+        with open("/tmp/get_display_error.log", "a") as f:
+            f.write(f"[get_display_and_dbus_env] Genel Hata: {str(e)}\n")
+    return None, None, None

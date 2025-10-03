@@ -3,7 +3,7 @@ import re
 import stat
 import subprocess
 from logger import logger
-from utils import run_command;
+from utils import run_command
 
 def restore_all_to_default():
     """

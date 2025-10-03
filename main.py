@@ -72,6 +72,8 @@ def apply_policy(username, policy_type, parameters):
         error_msg = f"'{policy_type}' politikası uygulanırken hata oluştu: {str(e)}"
         logger.error(f"[apply_policy] {error_msg}")
         return False, error_msg
+
+        
 def listen_for_policies(conn_params):
     try:
         connection = pika.BlockingConnection(conn_params)
