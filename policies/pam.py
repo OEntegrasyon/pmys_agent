@@ -1071,84 +1071,88 @@ COMMON_PASSWORD = "/etc/pam.d/common-password"
 
 def check_maxrepeat(expected_value=3):
     """
-    CIS 5.3.3.2.4 - Ensure password same consecutive characters is configured
-    Beklenen: maxrepeat 1–expected_value arasında olmalı (0 kabul edilmez).
     """
-    logger.info("[check_maxrepeat] Parola maxrepeat ayarları kontrol ediliyor...")
+    try:
+        logger.info("[check_maxrepeat] Parola maxrepeat ayarları kontrol ediliyor...")
 
-    current_value = None
+        current_value = None
+        conf_files = [PWQUALITY_CONF]
 
-    conf_files = [PWQUALITY_CONF]
-    if os.path.isdir("/etc/security/pwquality.conf.d/"):
-        for f in os.listdir("/etc/security/pwquality.conf.d/"):
-            if f.endswith(".conf"):
-                conf_files.append(os.path.join("/etc/security/pwquality.conf.d/", f))
+        if os.path.isdir("/etc/security/pwquality.conf.d/"):
+            conf_files += [
+                os.path.join("/etc/security/pwquality.conf.d/", f)
+                for f in os.listdir("/etc/security/pwquality.conf.d/")
+                if f.endswith(".conf")
+            ]
 
-    for file in conf_files:
-        try:
-            with open(file, "r") as f:
-                for line in f:
-                    if line.strip().startswith("maxrepeat"):
-                        try:
+        for file in conf_files:
+            try:
+                with open(file, "r") as f:
+                    for line in f:
+                        if re.match(r"^\s*maxrepeat\s*=", line):
                             current_value = int(line.split("=")[1].strip())
                             break
-                        except Exception:
-                            continue
-        except FileNotFoundError:
-            continue
+            except Exception:
+                continue
 
-    try:
-        with open(COMMON_PASSWORD, "r") as f:
-            for line in f:
-                if "pam_pwquality.so" in line and "maxrepeat" in line:
-                    logger.warning("[check_maxrepeat] /etc/pam.d/common-password içinde maxrepeat override edilmiş!")
-                    return False, f"Override bulundu: {line.strip()}"
-    except FileNotFoundError:
-        logger.warning(f"[check_maxrepeat] {COMMON_PASSWORD} bulunamadı.")
+        # PAM tarafında uygunsuz maxrepeat var mı?
+        pam_check = subprocess.run([
+            "grep", "-Psi",
+            r"^\s*password.*pam_pwquality\.so.*maxrepeat\s*=\s*(0|[4-9]|[1-9][0-9]+)\b",
+            COMMON_PASSWORD
+        ], stdout=subprocess.PIPE, text=True)
 
-    if current_value is None:
-        current_value = 0
+        if pam_check.stdout.strip():
+            return False, f"common-password içinde uygunsuz maxrepeat bulundu:\n{pam_check.stdout}"
 
-    logger.info(f"[check_maxrepeat] Mevcut maxrepeat = {current_value}, Beklenen: 1–{expected_value}")
+        if current_value is None:
+            return False, "maxrepeat parametresi tanımlı değil."
 
-    if 1 <= current_value <= expected_value:
-        return True, f"maxrepeat uygun: {current_value}"
-    else:
-        return False, f"maxrepeat uyumsuz: {current_value}"
+        if 1 <= current_value <= expected_value:
+            return True, f"maxrepeat uygun: {current_value}"
+        else:
+            return False, f"maxrepeat uygunsuz: {current_value} (1–{expected_value} olmalı, 0 olmamalı)"
+    except Exception as e:
+        return False, f"Hata: {str(e)}"
 
 
 def apply_maxrepeat(username=None, param=None):
     """
-    CIS 5.3.3.2.4 uyumlu hale getir.
-    Param örnek: {"maxrepeat": 3}
+    CIS 5.3.3.2.4 - Ensure password same consecutive characters is configured
+    param örnek: {"maxrepeat": 3}
     """
     try:
         desired_value = int(param.get("maxrepeat", 3)) if param else 3
-
         logger.info(f"[apply_maxrepeat] maxrepeat {desired_value} olarak uygulanacak.")
 
-        is_ok, msg = check_maxrepeat(expected_value=desired_value)
-        if is_ok:
-            logger.info(f"[apply_maxrepeat] Zaten uyumlu: {msg}")
-            return True, msg
+        ok, msg = check_maxrepeat(expected_value=desired_value)
+        if ok:
+            return True, f"Zaten uyumlu: {msg}"
 
-        # pwquality.conf içindeki eski satırları yorumla
-        run_command(["sed", "-ri", r"s/^\s*maxrepeat\s*=/# &/", PWQUALITY_CONF])
+        #  Eski tanımları kaldır
+        run_command(["sed", "-ri", r"/^\s*maxrepeat\s*=/d", PWQUALITY_CONF])
 
+        #  pwquality.conf.d dizinini oluştur
+        os.makedirs(os.path.dirname(PWQUALITY_CONF_D), exist_ok=True)
 
-        if not os.path.isdir(os.path.dirname(PWQUALITY_CONF_D)):
-            os.makedirs(os.path.dirname(PWQUALITY_CONF_D), exist_ok=True)
+        #  Yeni değeri yaz
+        with open(PWQUALITY_CONF_D, "w") as f:
+            f.write(f"maxrepeat = {desired_value}\n")
+        logger.info(f"[apply_maxrepeat] {PWQUALITY_CONF_D} dosyasına maxrepeat = {desired_value} yazıldı.")
 
-        try:
-            with open(PWQUALITY_CONF_D, "w") as f:
-                f.write(f"maxrepeat = {desired_value}\n")
-            logger.info(f"[apply_maxrepeat] {PWQUALITY_CONF_D} dosyasına maxrepeat = {desired_value} yazıldı.")
-        except Exception as e:
-            logger.error(f"[apply_maxrepeat] Dosya yazma hatası: {e}")
-            return False, str(e)
+        # PAM modüllerinde uygunsuz tanımları temizle
+        pam_dir = "/usr/share/pam-configs"
+        success, output = run_command([
+            "grep", "-Pl",
+            r"pam_pwquality\.so.*maxrepeat",
+            f"{pam_dir}/*"
+        ])
+        if success and output:
+            for file in output.splitlines():
+                run_command(["sed", "-ri", r"s/\bmaxrepeat\s*=\s*[0-9]+\b//g", file])
+                logger.info(f"[apply_maxrepeat] {file} içindeki maxrepeat argümanı temizlendi.")
 
-        return check_maxrepeat(expected_value=desired_value)
-
+        return True, f"maxrepeat = {desired_value} olarak ayarlandı."
     except Exception as e:
         msg = f"Hata: {str(e)}"
         logger.error(f"[CIS 5.3.3.2.4 ][APPLY] {msg}")
@@ -1157,206 +1161,227 @@ def apply_maxrepeat(username=None, param=None):
 
 
     
+PWQUALITY_CONF_D = "/etc/security/pwquality.conf.d/50-pwmaxsequence.conf"
+PWQUALITY_DIR = "/etc/security/pwquality.conf.d"
+
 def check_maxsequence(expected_value=3):
     """
-    maxsequence değerini kontrol et.
-    CIS uyumu için değer 1-3 arası olmalı ve 0 olmamalı.
+    CIS 5.3.3.2.5 - Ensure password maximum sequential characters is configured
+    Gereksinimler:
+      - maxsequence 1–3 aralığında olmalı (0 olmamalı)
+      - common-password içinde pam_pwquality.so maxsequence 0 veya >3 olmamalı
     """
-    config_files = ["/etc/security/pwquality.conf"]
+    try:
+        logger.info("[check_maxsequence] Parola maxsequence ayarları kontrol ediliyor...")
 
-    # /etc/security/pwquality.conf.d içindeki dosyaları ekle
-    conf_d_path = "/etc/security/pwquality.conf.d"
-    if os.path.isdir(conf_d_path):
-        for f in os.listdir(conf_d_path):
-            full_path = os.path.join(conf_d_path, f)
-            if os.path.isfile(full_path):
-                config_files.append(full_path)
+        conf_files = [PWQUALITY_CONF]
+        conf_d_path = PWQUALITY_DIR
+        if os.path.isdir(conf_d_path):
+            conf_files.extend(
+                os.path.join(conf_d_path, f)
+                for f in os.listdir(conf_d_path)
+                if f.endswith(".conf")
+            )
 
-    found_value = None
-    success, output = run_command([
-        "grep", "-Psi", r'^\s*maxsequence\s*=\s*\d+', *config_files
-    ])
+        # maxsequence değerini tespit et
+        found_value = None
+        success, output = run_command([
+            "grep", "-Psi", r"^\s*maxsequence\s*=\s*[0-9]+", *conf_files
+        ])
+        if success and output:
+            match = re.search(r"maxsequence\s*=\s*(\d+)", output)
+            if match:
+                found_value = int(match.group(1))
 
-    if success and output:
-        match = re.search(r"maxsequence\s*=\s*(\d+)", output)
-        if match:
-            found_value = int(match.group(1))
+        # PAM içinde hatalı tanım var mı kontrol et
+        pam_check = subprocess.run([
+            "grep", "-Psi",
+            r"^\s*password.*pam_pwquality\.so.*maxsequence\s*=\s*(0|[4-9]|[1-9][0-9]+)\b",
+            COMMON_PASSWORD
+        ], stdout=subprocess.PIPE, text=True)
 
-    if found_value is None:
-        logger.warning("[check_maxsequence] maxsequence ayarı bulunamadı.")
-        return False, "maxsequence ayarı bulunamadı"
+        if pam_check.stdout.strip():
+            return False, f"common-password içinde hatalı maxsequence parametresi bulundu:\n{pam_check.stdout}"
 
-    if found_value == 0:
-        return False, f"maxsequence={found_value}, 0 olmamalı"
-    if found_value > 3:
-        return False, f"maxsequence={found_value}, 3 veya daha az olmalı"
+        # Değeri değerlendir
+        if found_value is None:
+            return False, "maxsequence parametresi bulunamadı."
+        if found_value == 0:
+            return False, f"maxsequence={found_value}, 0 olmamalı"
+        if found_value > 3:
+            return False, f"maxsequence={found_value}, 3 veya daha az olmalı"
 
-    if found_value != expected_value:
-        return False, f"maxsequence={found_value}, beklenen={expected_value}"
-
-    return True, f"maxsequence={found_value}, uyumlu"
-
+        return True, f"maxsequence={found_value}, CIS uyumlu."
+    except Exception as e:
+        return False, f"Hata: {str(e)}"
 
 
 def apply_maxsequence(username=None, param=None):
     """
-    5.3.3.2.5 Ensure password maximum sequential characters is configured.
-    maxsequence değerini uygula. CIS'e uygun şekilde yapılandırır.
-    Önce mevcut durumu check eder, uyumlu değilse düzeltir.
-
-    Args:
-        param (dict): {"value": 3} şeklinde beklenen parametre
-
-    Returns:
-        (bool, str): (Başarılı mı?, Mesaj)
+    CIS 5.3.3.2.5 - Ensure password maximum sequential characters is configured
+    param örnek: {"value": 3}
     """
-    expected_value = param.get("value", 3) if param else 3
-
-    compliant, message = check_maxsequence(expected_value)
-    if compliant:
-        logger.info(f"[apply_maxsequence] Uyumlu, işlem yapılmadı. ({message})")
-        return True, message
-
-    logger.info(f"[apply_maxsequence] Uyumlu değil: {message} → Düzeltiliyor...")
-
-    # Eski ayarı yorum satırına al
-    run_command([
-        "sed", "-ri", r's/^\s*maxsequence\s*=/# &/',
-        "/etc/security/pwquality.conf"
-    ])
-
-    if not os.path.exists("/etc/security/pwquality.conf.d"):
-        os.makedirs("/etc/security/pwquality.conf.d")
-
-    conf_file = "/etc/security/pwquality.conf.d/50-pwmaxsequence.conf"
     try:
-        with open(conf_file, "w") as f:
-            f.write(f"maxsequence = {expected_value}\n")
-        logger.info(f"[apply_maxsequence] maxsequence={expected_value} olarak ayarlandı ({conf_file})")
-        return True, f"maxsequence {expected_value} olarak ayarlandı"
+        desired_value = int(param.get("value", 3)) if param else 3
+
+        ok, msg = check_maxsequence(expected_value=desired_value)
+        if ok:
+            return True, f"Zaten uyumlu: {msg}"
+
+        # Eski tanımı tamamen kaldır
+        run_command(["sed", "-ri", r"/^\s*maxsequence\s*=/d", PWQUALITY_CONF])
+
+        # .d dizini yoksa oluştur
+        os.makedirs(os.path.dirname(PWQUALITY_CONF_D), exist_ok=True)
+
+        # Yeni dosyaya ayar yaz
+        with open(PWQUALITY_CONF_D, "w") as f:
+            f.write(f"maxsequence = {desired_value}\n")
+        logger.info(f"[apply_maxsequence] {PWQUALITY_CONF_D} dosyasına maxsequence = {desired_value} yazıldı.")
+
+        # PAM modüllerinde uygunsuz tanımları temizle
+        pam_dir = "/usr/share/pam-configs"
+        success, output = run_command([
+            "grep", "-Pl",
+            r"pam_pwquality\.so.*maxsequence",
+            f"{pam_dir}/*"
+        ])
+        if success and output:
+            for file in output.splitlines():
+                run_command(["sed", "-ri", r"s/\bmaxsequence\s*=\s*[0-9]+\b//g", file])
+                logger.info(f"[apply_maxsequence] {file} içindeki maxsequence argümanı temizlendi.")
+
+        return True, f"maxsequence {desired_value} olarak ayarlandı ve eski tanımlar temizlendi."
     except Exception as e:
         msg = f"Hata: {str(e)}"
-        logger.error(f"[apply_maxsequence] Yazma hatası: {msg}")
-        return False, f"maxsequence ayarlanamadı: {msg}"
+        logger.error(f"[CIS 5.3.3.2.5][APPLY] {msg}")
+        return False, f"Hata: {msg}"
 
 
+DICTCHECK_CONF = os.path.join(PWQUALITY_DIR, "50-dictcheck.conf")
+
+
+PAM_CONFIG_DIR = "/usr/share/pam-configs"
 
 def check_dictcheck(expected_value=1):
     """
-    5.3.3.2.6 Ensure password dictionary check is enabled
-    dictcheck değerini kontrol et.
-    CIS uyumu için dictcheck 0 olmamalı.
-
-    Returns:
-        (bool, str): (Uyumlu mu?, Mesaj)
+    CIS 5.3.3.2.6 - Ensure password dictionary check is enabled
+    dictcheck=0 bulunmamalı.
     """
-    config_files = [
-        "/etc/security/pwquality.conf",
-        "/etc/security/pwquality.conf.d/*.conf"
-    ]
+    try:
+        conf_files = [PWQUALITY_CONF]
+        if os.path.isdir(PWQUALITY_DIR):
+            for f in os.listdir(PWQUALITY_DIR):
+                if f.endswith(".conf"):
+                    conf_files.append(os.path.join(PWQUALITY_DIR, f))
 
-    # 1) pwquality.conf ve .d altındaki dosyalarda dictcheck=0 arama
-    success, output = run_command([
-        "grep", "-Psi", r'^\h*dictcheck\h*=\h*0\b', *config_files
-    ])
-    if success and output:
-        return False, f"dictcheck=0 bulundu (pwquality.conf veya .d altında)."
+        for f in conf_files:
+            if not os.path.isfile(f):
+                continue
+            with open(f, "r") as file:
+                for line in file:
+                    if re.match(r"^\s*dictcheck\s*=\s*0\b", line):
+                        return False, f"{f} içinde dictcheck=0 bulundu."
 
-    # 2) PAM dosyalarında dictcheck=0 parametresi arama
-    success, output = run_command([
-        "grep", "-Psi", r'^\h*password\h+(requisite|required|sufficient)\h+pam_pwquality\.so.*dictcheck\h*=\h*0\b',
-        "/etc/pam.d/common-password"
-    ])
-    if success and output:
-        return False, "pam_pwquality satırında dictcheck=0 bulundu!"
+        if os.path.isfile(COMMON_PASSWORD):
+            with open(COMMON_PASSWORD, "r") as file:
+                for line in file:
+                    if "pam_pwquality.so" in line and "dictcheck=0" in line:
+                        return False, f"{COMMON_PASSWORD} içinde dictcheck=0 bulundu."
 
-    # 3) Hiçbir yerde 0 yok → uyumlu
-    return True, f"dictcheck etkin (varsayılan={expected_value})"
+        if os.path.isfile(DICTCHECK_CONF):
+            with open(DICTCHECK_CONF, "r") as f:
+                content = f.read()
+                match = re.search(r"^\s*dictcheck\s*=\s*(\d+)", content, re.MULTILINE)
+                if match and int(match.group(1)) == expected_value:
+                    return True, f"dictcheck = {expected_value} aktif ({DICTCHECK_CONF})"
+                else:
+                    return False, f"{DICTCHECK_CONF} içinde dictcheck değeri beklenenden farklı."
+
+        return False, "dictcheck=1 tanımı bulunamadı."
+
+    except Exception as e:
+        return False, f"Hata: {e}"
 
 
 def apply_dictcheck(username=None, param=None):
     """
-    5.3.3.2.6 Ensure password dictionary check is enabled
-    CIS'e uygun şekilde dictcheck=1 olacak şekilde yapılandırır.
-    Önce mevcut durumu check eder, uyumlu değilse düzeltir.
-
-    Args:
-        param (dict): {"value": 1} şeklinde beklenen parametre
-
-    Returns:
-        (bool, str): (Başarılı mı?, Mesaj)
+    CIS 5.3.3.2.6 Remediation
+    dictcheck=1 olacak şekilde yapılandırır.
     """
-    expected_value = param.get("value", 1) if param else 1
-
-    compliant, message = check_dictcheck(expected_value)
-    if compliant:
-        logger.info(f"[apply_dictcheck] Uyumlu, işlem yapılmadı. ({message})")
-        return True, message
-
-    logger.info(f"[apply_dictcheck] Uyumlu değil: {message} → Düzeltiliyor...")
-
-    # 1) pwquality.conf ve .d içindekileri temizle (dictcheck=0 varsa yorum satırına al)
-    run_command([
-        "sed", "-ri", r's/^\s*dictcheck\s*=\s*0\b/# &/',
-        "/etc/security/pwquality.conf"
-    ])
-    run_command([
-        "sed", "-ri", r's/^\s*dictcheck\s*=\s*0\b/# &/',
-        "/etc/security/pwquality.conf.d/" + "*.conf"
-    ])
-
-    # 2) pam_pwquality satırlarından dictcheck=0 argümanını kaldır
-    run_command([
-        "sed", "-ri", r's/\bdictcheck\s*=\s*0\b//g',
-        "/etc/pam.d/common-password"
-    ])
-
-    if not os.path.exists("/etc/security/pwquality.conf.d"):
-        os.makedirs("/etc/security/pwquality.conf.d")
-
-    conf_file = "/etc/security/pwquality.conf.d/50-dictcheck.conf"
     try:
-        with open(conf_file, "w") as f:
+        expected_value = int(param.get("value", 1)) if param else 1
+
+        ok, msg = check_dictcheck(expected_value)
+        if ok:
+            return True, f"Zaten uyumlu: {msg}"
+
+        logger.info(f"[apply_dictcheck] Uyumsuz: {msg} → Düzeltiliyor...")
+
+        if os.path.isfile(PWQUALITY_CONF):
+            run_command(["sed", "-ri", r"s/^\s*dictcheck\s*=\s*0\b/# &/", PWQUALITY_CONF])
+
+        if os.path.isdir(PWQUALITY_DIR):
+            for f in os.listdir(PWQUALITY_DIR):
+                if f.endswith(".conf"):
+                    path = os.path.join(PWQUALITY_DIR, f)
+                    run_command(["sed", "-ri", r"s/^\s*dictcheck\s*=\s*0\b/# &/", path])
+
+        if os.path.isfile(COMMON_PASSWORD):
+            run_command(["sed", "-ri", r"s/\bdictcheck\s*=\s*0\b//g", COMMON_PASSWORD])
+
+        success, output = run_command(["grep", "-Pl", r"pam_pwquality\.so.*dictcheck", f"{PAM_CONFIG_DIR}/*"])
+        if success and output:
+            for f in output.splitlines():
+                run_command(["sed", "-ri", r"s/\bdictcheck\s*=\s*\d+\b//g", f])
+                logger.info(f"[apply_dictcheck] {f} içindeki dictcheck parametresi temizlendi.")
+
+        os.makedirs(PWQUALITY_DIR, exist_ok=True)
+        with open(DICTCHECK_CONF, "w") as f:
             f.write(f"dictcheck = {expected_value}\n")
-        logger.info(f"[apply_dictcheck] dictcheck={expected_value} olarak ayarlandı ({conf_file})")
+        logger.info(f"[apply_dictcheck] dictcheck={expected_value} olarak ayarlandı ({DICTCHECK_CONF})")
+
+        final_ok, final_msg = check_dictcheck(expected_value)
+        return final_ok, final_msg
+
     except Exception as e:
-        logger.error(f"[apply_dictcheck] Yazma hatası: {e}")
-        return False, f"dictcheck ayarlanamadı: {e}"
+        msg = f"Hata: {str(e)}"
+        logger.error(f"[CIS 5.3.3.2.6][APPLY] {msg}")
+        return False, msg
 
-
-    final_ok, final_msg = check_dictcheck(expected_value)
-    return final_ok, final_msg
-
-
-
+ENFORCING_CONF = os.path.join(PWQUALITY_DIR, "50-enforcing.conf")
 
 
 def check_enforcing(expected_value=1):
     """
     CIS 5.3.3.2.7 - Ensure password quality checking is enforced
-    Check pwquality.conf and PAM common-password for enforcing=0
+    enforcing=0 bulunmamalı, enforcing=1 tanımlı olmalı.
     """
     try:
-        # 1. pwquality.conf dosyalarını kontrol et
-        config_files = ["/etc/security/pwquality.conf"] + glob.glob("/etc/security/pwquality.conf.d/*.conf")
-        for conf_file in config_files:
-            if not os.path.exists(conf_file):
-                continue
-            with open(conf_file, "r") as f:
-                for line in f:
-                    line_clean = line.strip().lower()
-                    if line_clean.startswith("enforcing") and line_clean.endswith("0"):
-                        return False, f"{conf_file} içinde enforcing=0 bulundu!"
+        config_files = [PWQUALITY_CONF] + glob.glob(f"{PWQUALITY_DIR}/*.conf")
+        for file in config_files:
+            if os.path.exists(file):
+                with open(file, "r") as f:
+                    for line in f:
+                        if re.match(r"^\s*enforcing\s*=\s*0\b", line):
+                            return False, f"{file} içinde enforcing=0 bulundu!"
 
-        # 2. PAM satırlarını kontrol et
         if os.path.exists(COMMON_PASSWORD):
             with open(COMMON_PASSWORD, "r") as f:
                 for line in f:
-                    line_clean = line.strip()
-                    if "pam_pwquality.so" in line_clean and "enforcing=0" in line_clean:
-                        return False, f"{COMMON_PASSWORD} içinde pam_pwquality.so enforcing=0 bulundu!"
+                    if re.search(r"pam_pwquality\.so.*enforcing=0", line):
+                        return False, f"{COMMON_PASSWORD} içinde enforcing=0 bulundu!"
 
-        return True, f"enforcing={expected_value} (uyumlu)"
+        if os.path.isfile(ENFORCING_CONF):
+            with open(ENFORCING_CONF, "r") as f:
+                content = f.read()
+            match = re.search(r"^\s*enforcing\s*=\s*(\d+)", content, re.MULTILINE)
+            if match and int(match.group(1)) == expected_value:
+                return True, f"enforcing = {expected_value} aktif ({ENFORCING_CONF})"
+            else:
+                return False, f"{ENFORCING_CONF} içinde enforcing değeri hatalı."
+
+        return False, "enforcing=1 tanımı bulunamadı."
 
     except Exception as e:
         return False, f"Hata: {e}"
@@ -1365,113 +1390,93 @@ def check_enforcing(expected_value=1):
 def apply_enforcing(username=None, param=None):
     """
     CIS 5.3.3.2.7 - Ensure password quality checking is enforced
-    Düzeltme:
-    - pwquality.conf dosyalarında enforcing=0 satırlarını yorumla
-    - PAM common-password içindeki pam_pwquality.so satırına enforcing=1 ekle
     """
     try:
-        expected_value = "1"
-        compliant, message = check_enforcing(expected_value)
-        if compliant:
-            logger.info(f"[apply_enforcing] Zaten uyumlu: {message}")
-            return True, message
+        expected_value = int(param.get("value", 1)) if param else 1
 
-        logger.info(f"[apply_enforcing] Uyumlu değil: {message} → Düzeltiliyor...")
+        ok, msg = check_enforcing(expected_value)
+        if ok:
+            return True, f"Zaten uyumlu: {msg}"
 
-        # 1. pwquality.conf ve conf.d/*.conf
-        config_files = ["/etc/security/pwquality.conf"] + glob.glob("/etc/security/pwquality.conf.d/*.conf")
-        for conf_file in config_files:
-            if not os.path.exists(conf_file):
-                continue
-            with open(conf_file, "r") as f:
-                lines = f.readlines()
-            new_lines = []
-            for line in lines:
-                if line.strip().lower().startswith("enforcing") and line.strip().endswith("0"):
-                    new_lines.append("# " + line)
-                else:
-                    new_lines.append(line)
-            with open(conf_file, "w") as f:
-                f.writelines(new_lines)
+        logger.info(f"[apply_enforcing] Uyumsuz: {msg} → Düzeltiliyor...")
+
+        for file in [PWQUALITY_CONF] + glob.glob(f"{PWQUALITY_DIR}/*.conf"):
+            if os.path.exists(file):
+                run_command(["sed", "-ri", r"s/^\s*enforcing\s*=\s*0\b/# &/", file])
 
         if os.path.exists(COMMON_PASSWORD):
-            with open(COMMON_PASSWORD, "r") as f:
-                lines = f.readlines()
-            new_lines = []
-            for line in lines:
-                if "pam_pwquality.so" in line:
-                    # enforcing parametresi varsa sil ve ekle
-                    parts = line.strip().split()
-                    parts = [p for p in parts if not p.startswith("enforcing=")]
-                    parts.append(f"enforcing={expected_value}")
-                    new_lines.append(" ".join(parts) + "\n")
-                else:
-                    new_lines.append(line)
-            with open(COMMON_PASSWORD, "w") as f:
-                f.writelines(new_lines)
+            run_command(["sed", "-ri", r"s/\benforcing\s*=\s*0\b//g", COMMON_PASSWORD])
 
-        # 3. Eğer conf.d dizini yoksa oluştur
-        if not os.path.exists("/etc/security/pwquality.conf.d"):
-            os.makedirs("/etc/security/pwquality.conf.d")
+        success, output = run_command(["grep", "-Pl", r"pam_pwquality\.so.*enforcing", f"{PAM_CONFIG_DIR}/*"])
+        if success and output:
+            for path in output.splitlines():
+                run_command(["sed", "-ri", r"s/\benforcing\s*=\s*\d+\b//g", path])
 
-        # 4. Yeni enforcing.conf dosyası ekle
-        conf_file = "/etc/security/pwquality.conf.d/50-enforcing.conf"
-        with open(conf_file, "w") as f:
+        os.makedirs(PWQUALITY_DIR, exist_ok=True)
+        with open(ENFORCING_CONF, "w") as f:
             f.write(f"enforcing = {expected_value}\n")
 
-        logger.info(f"[apply_enforcing] enforcing={expected_value} olarak ayarlandı ({conf_file})")
+        logger.info(f"[apply_enforcing] enforcing={expected_value} olarak ayarlandı ({ENFORCING_CONF})")
 
-        compliant, message = check_enforcing(expected_value)
-        if compliant:
-            return True, f"enforcing={expected_value} olarak uygulandı ve doğrulandı."
-        else:
-            return False, f"Uygulama sonrası hala uyumsuz: {message}"
+        final_ok, final_msg = check_enforcing(expected_value)
+        return final_ok, final_msg
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
-        logger.error(f"[apply_enforcing] Yazma hatası: {msg}")
-        return False, f"enforcing ayarlanamadı: {msg}"
+        logger.error(f"[CIS 5.3.3.2.7][APPLY] {msg}")
+        return False, msg
 
-
+PWQUALITY_FILE = os.path.join(PWQUALITY_DIR, "50-pwroot.conf")
 
 def check_enforce_for_root():
     """
-    enforce_for_root ayarını kontrol et.
-    CIS'e göre enforce_for_root aktif olmalı.
+    CIS 5.3.3.2.8 - Ensure password quality is enforced for the root user
+    enforce_for_root aktif olmalı.
     """
-    success, output = run_command([
-    "grep", "-Psi", r'^\s*enforce_for_root\s*$', 
-    "/etc/security/pwquality.conf",
-    "/etc/security/pwquality.conf.d/*.conf"
-])
-
-    if success and output:
-        return True, "enforce_for_root etkin (uyumlu)"
-    return False, "enforce_for_root ayarı bulunamadı (uyumsuz)"
+    try:
+        config_files = [PWQUALITY_CONF] + glob.glob(f"{PWQUALITY_DIR}/*.conf")
+        found = False
+        for file in config_files:
+            if os.path.exists(file):
+                with open(file, "r") as f:
+                    for line in f:
+                        if re.match(r"^\s*enforce_for_root\b", line):
+                            found = True
+                            break
+        if found:
+            return True, "enforce_for_root aktif (uyumlu)"
+        return False, "enforce_for_root bulunamadı (uyumsuz)"
+    except Exception as e:
+        return False, f"Hata: {e}"
 
 
 def apply_enforce_for_root(username=None, param=None):
     """
-    5.3.3.2.8 Ensure password quality is enforced for the root user 
-    enforce_for_root ayarını uygula.
-    CIS'e göre aktif olmalı.
+    5.3.3.2.8 - Ensure password quality is enforced for the root user
+    CIS'e tam uyumlu sürüm
     """
-    compliant, message = check_enforce_for_root()
-    if compliant:
-        logger.info(f"[apply_enforce_for_root] Uyumlu: {message}")
-        return True, message
-
-    logger.info(f"[apply_enforce_for_root] Uyumlu değil: {message} → Düzeltiliyor...")
-
-    if not os.path.exists("/etc/security/pwquality.conf.d"):
-        os.makedirs("/etc/security/pwquality.conf.d")
-
-    conf_file = "/etc/security/pwquality.conf.d/50-pwroot.conf"
     try:
-        with open(conf_file, "w") as f:
+        ok, msg = check_enforce_for_root()
+        if ok:
+            logger.info(f"[apply_enforce_for_root] Zaten uyumlu: {msg}")
+            return True, msg
+
+        logger.info(f"[apply_enforce_for_root] Uyumsuz: {msg} → Düzeltiliyor...")
+
+        for file in [PWQUALITY_CONF] + glob.glob(f"{PWQUALITY_DIR}/*.conf"):
+            if os.path.exists(file):
+                run_command(["sed", "-ri", r"s/^\s*enforce_for_root\b/# &/", file])
+
+        os.makedirs(PWQUALITY_DIR, exist_ok=True)
+
+        with open(PWQUALITY_FILE, "w") as f:
             f.write("enforce_for_root\n")
-        logger.info(f"[apply_enforce_for_root] enforce_for_root aktif edildi ({conf_file})")
-        return True, "enforce_for_root aktif edildi"
+
+        logger.info(f"[apply_enforce_for_root] enforce_for_root eklendi ({PWQUALITY_FILE})")
+
+        ok, msg = check_enforce_for_root()
+        return ok, msg
+
     except Exception as e:
         msg = f"Hata: {str(e)}"
         logger.error(f"[apply_enforce_for_root] Yazma hatası: {msg}")
@@ -1479,152 +1484,136 @@ def apply_enforce_for_root(username=None, param=None):
 
 
 
+PAM_PROFILE = "/usr/share/pam-configs/pwhistory"
+DEFAULT_REMEMBER = 24
+
 
 def check_password_reuse(param=None):
     """
     CIS 5.3.3.3.1 - Ensure password history remember is configured
-    /etc/pam.d/common-password dosyasında pam_pwhistory.so satırını kontrol eder.
     """
     try:
-        expected_remember = str(param.get("remember", 24)) if param else "24"
+        expected_remember = int(param.get("remember", DEFAULT_REMEMBER)) if param else DEFAULT_REMEMBER
 
-        # pam-auth-update listesinde pwhistory aktif mi?
-        result = subprocess.run(["pam-auth-update", "--list"],
-                                capture_output=True, text=True, check=True)
-        if "pwhistory" not in result.stdout:
-            return False, "pam_pwhistory profili etkin değil."
+        if not os.path.exists(COMMON_PASSWORD):
+            return False, f"{COMMON_PASSWORD} bulunamadı."
 
-        # common-password içinde beklenen parametre var mı?
-        with open("/etc/pam.d/common-password") as f:
-            lines = f.read()
+        with open(COMMON_PASSWORD, "r") as f:
+            content = f.read()
 
-        if f"pam_pwhistory.so remember={expected_remember}" in lines:
-            return True, f"pam_pwhistory etkin (remember={expected_remember})"
+        # pam_pwhistory.so satırı var mı?
+        match = re.search(r"pam_pwhistory\.so.*remember=(\d+)", content)
+        if not match:
+            return False, "pam_pwhistory.so satırı bulunamadı."
+
+        current_remember = int(match.group(1))
+        if current_remember >= expected_remember:
+            return True, f"pam_pwhistory remember={current_remember} (uyumlu ≥{expected_remember})"
         else:
-            return False, f"pam_pwhistory bulundu ama remember={expected_remember} değil."
+            return False, f"pam_pwhistory remember={current_remember}, beklenen ≥{expected_remember}"
+
     except Exception as e:
-        return False, f"Kontrol sırasında hata: {e}"
+        return False, f"Hata: {e}"
 
 
 def apply_password_history_remember(username=None, param=None):
     """
     CIS 5.3.3.3.1 - Ensure password history remember is configured
-    Eğer eksikse veya düşükse pam_pwhistory.so satırına remember=<min_remember> ekler/düzeltir.
     """
-    compliant, message = check_password_reuse(param)
-    if compliant:
-        logger.info(f"[apply_password_history_remember] Uyumlu: {message}")
-        return True, message
-
-    logger.info(f"[apply_password_history_remember] Uyumlu değil: {message} → Düzeltiliyor...")
-
     try:
-        profile_path = "/usr/share/pam-configs/pwhistory"
-        remember_val = str(param.get("remember", 24)) if param else "24"
+        remember_val = int(param.get("remember", DEFAULT_REMEMBER)) if param else DEFAULT_REMEMBER
 
-        profile_content = f"""Name: pwhistory
+        ok, msg = check_password_reuse({"remember": remember_val})
+        if ok:
+            return True, f"Zaten uyumlu: {msg}"
+
+        logger.info(f"[apply_password_history_remember] Uyumsuz: {msg} → Düzeltiliyor...")
+
+        profile_content = f"""Name: pwhistory password history checking
 Default: yes
 Priority: 1024
-Conflicts: 
 Password-Type: Primary
 Password:
-    requisite pam_pwhistory.so remember={remember_val} enforce_for_root use_authtok
+    requisite pam_pwhistory.so remember={remember_val} enforce_for_root try_first_pass use_authtok
 """
 
-        with open(profile_path, "w") as f:
+        with open(PAM_PROFILE, "w") as f:
             f.write(profile_content)
 
-        # pam-auth-update ile etkinleştir
-        subprocess.run(["pam-auth-update", "--enable", "pwhistory", "--force"],
-                       check=True)
+        run_command(["pam-auth-update", "--enable", "pwhistory", "--force"])
 
-        logger.info(f"[apply_password_history_remember] pam_pwhistory etkinleştirildi (remember={remember_val})")
-        return True, f"pam_pwhistory profili eklendi ve etkinleştirildi (remember={remember_val})."
+        logger.info(f"[apply_password_history_remember] pam_pwhistory remember={remember_val} olarak etkinleştirildi.")
+
+        ok, msg = check_password_reuse({"remember": remember_val})
+        return ok, msg
+
     except Exception as e:
-        logger.error(f"[apply_password_history_remember] Hata: {e}")
-        return False, f"pam_pwhistory uygulanamadı: {e}"
+        msg = f"Hata: {str(e)}"
+        logger.error(f"[apply_password_history_remember] {msg}")
+        return False, msg
 
 
 
 
-def check_password_history_enforce_for_root(min_remember):
+def check_password_history_enforce_for_root(param=None):
     """
     CIS 5.3.3.3.2 - Ensure password history is enforced for the root user
-    pam-auth-update uyumlu kontrol.
     """
-    grep_cmd = [
-        "grep", "-Psi",
-        r'^\h*Password:\h+.*pam_pwhistory\.so.*enforce_for_root\b',
-        PWHISTORY_PROFILE_PATH
-    ]
-    success, output = run_command(grep_cmd)
+    try:
+        expected_remember = int(param.get("remember", DEFAULT_REMEMBER)) if param else DEFAULT_REMEMBER
 
-    if not success or not output.strip():
-        return False, f"{PWHISTORY_PROFILE_PATH} içinde enforce_for_root bulunamadı"
+        if not os.path.exists(COMMON_PASSWORD):
+            return False, f"{COMMON_PASSWORD} bulunamadı."
 
-    # remember=<N> değerini kontrol et
-    match = re.search(r"remember=(\d+)", output)
-    if match:
-        current_value = int(match.group(1))
-        if current_value >= min_remember:
-            return True, f"pam_pwhistory.so enforce_for_root ve remember={current_value} (uyumlu)"
+        with open(COMMON_PASSWORD, "r") as f:
+            content = f.read()
+
+        match = re.search(r"pam_pwhistory\.so.*remember=(\d+).*enforce_for_root", content)
+        if match:
+            current_remember = int(match.group(1))
+            if current_remember >= expected_remember:
+                return True, f"pam_pwhistory.so enforce_for_root aktif ve remember={current_remember} (uyumlu)"
+            else:
+                return False, f"remember={current_remember}, beklenen ≥{expected_remember}"
         else:
-            return False, f"remember={current_value}, {min_remember} veya üstü olmalı"
-    else:
-        return False, "remember parametresi bulunamadı"
+            return False, "pam_pwhistory.so enforce_for_root bulunamadı."
+
+    except Exception as e:
+        return False, f"Hata: {e}"
 
 
 def apply_password_history_enforce_for_root(username=None, param=None):
     """
     CIS 5.3.3.3.2 - Ensure password history is enforced for the root user
-    pam-auth-update uyumlu remediation.
     """
-    param = param or {}
-    min_remember = int(param.get("min_remember", 24))
-
-    compliant, message = check_password_history_enforce_for_root(min_remember)
-    if compliant:
-        logger.info(f"[apply_password_history_enforce_for_root] {message}")
-        return True, message
-
-    logger.info(f"[apply_password_history_enforce_for_root] Uyumlu değil: {message} → Düzeltiliyor...")
-
     try:
+        remember_val = int(param.get("remember", DEFAULT_REMEMBER)) if param else DEFAULT_REMEMBER
 
-        with open(PWHISTORY_PROFILE_PATH, "r") as f:
-            lines = f.readlines()
+        ok, msg = check_password_history_enforce_for_root({"remember": remember_val})
+        if ok:
+            logger.info(f"[apply_password_history_enforce_for_root] {msg}")
+            return True, msg
 
-        new_lines = []
-        changed = False
-        for line in lines:
-            if "pam_pwhistory.so" in line and not line.strip().startswith("#"):
+        logger.info(f"[apply_password_history_enforce_for_root] Uyumsuz: {msg} → Düzeltiliyor...")
 
-                if "enforce_for_root" not in line:
-                    line = line.strip() + " enforce_for_root\n"
-
-                if "remember=" in line:
-                    line = re.sub(r"remember=\d+", f"remember={min_remember}", line)
-                else:
-                    line = line.strip() + f" remember={min_remember}\n"
-
-                changed = True
-            new_lines.append(line)
-
-        if not changed:
-
-            new_lines.append(
-                f"Password:     requisite pam_pwhistory.so remember={min_remember} enforce_for_root try_first_pass use_authtok\n"
-            )
-
+        profile_content = f"""Name: pwhistory password history checking
+Default: yes
+Priority: 1024
+Password-Type: Primary
+Password:
+    requisite pam_pwhistory.so remember={remember_val} enforce_for_root try_first_pass use_authtok
+"""
 
         with open(PWHISTORY_PROFILE_PATH, "w") as f:
-            f.writelines(new_lines)
+            f.write(profile_content)
 
+        run_command(["pam-auth-update", "--enable", "pwhistory", "--force"])
 
-        run_command(["pam-auth-update", "--enable", "pwhistory"])
+        logger.info(f"[apply_password_history_enforce_for_root] enforce_for_root eklendi ve pwhistory etkinleştirildi")
 
-        logger.info("[apply_password_history_enforce_for_root] enforce_for_root ayarlandı ve pam-auth-update çalıştırıldı")
-        return True, f"pam_pwhistory.so enforce_for_root ve remember={min_remember} olarak ayarlandı"
+        ok, msg = check_password_history_enforce_for_root({"remember": remember_val})
+        return ok, msg
+
     except Exception as e:
         msg = f"Hata: {str(e)}"
         logger.error(f"[apply_password_history_enforce_for_root] {msg}")
@@ -1640,7 +1629,7 @@ def check_password_history_use_authtok():
 
     grep_cmd = [
         "grep", "-Psi",
-        r'^\h*password\h+[^#\n\r]+\h+pam_pwhistory\.so.*use_authtok\b',
+        r'^\s*password\s+.*pam_pwhistory\.so.*use_authtok\b',
         COMMON_PASSWORD
     ]
     success, output = run_command(grep_cmd)
@@ -1654,7 +1643,8 @@ def check_password_history_use_authtok():
 def apply_password_history_use_authtok(username=None, param=None):
     """
     CIS 5.3.3.3.3 - Ensure pam_pwhistory includes use_authtok
-    Eğer use_authtok eksikse pam_pwhistory.so satırına ekler.
+      - /usr/share/pam-configs/pwhistory dosyasını düzenle
+      - pam-auth-update --enable pwhistory çalıştır
     """
     compliant, message = check_password_history_use_authtok()
     if compliant:
@@ -1663,168 +1653,194 @@ def apply_password_history_use_authtok(username=None, param=None):
 
     logger.info(f"[apply_password_history_use_authtok] Uyumlu değil: {message} → Düzeltiliyor...")
 
-
     try:
-        with open(COMMON_PASSWORD, "r") as f:
-            lines = f.readlines()
+        remember_val = int(param.get("remember", DEFAULT_REMEMBER)) if param else DEFAULT_REMEMBER
 
-        new_lines = []
-        changed = False
-        for line in lines:
-            if re.search(r"pam_pwhistory\.so", line) and not line.strip().startswith("#"):
-                if "use_authtok" not in line:
-                    new_line = line.strip() + " use_authtok\n"
-                else:
-                    new_line = line
-                new_lines.append(new_line)
-                changed = True
-            else:
-                new_lines.append(line)
+        profile_content = f"""Name: pwhistory password history checking
+Default: yes
+Priority: 1024
+Password-Type: Primary
+Password:
+    requisite pam_pwhistory.so remember={remember_val} enforce_for_root try_first_pass use_authtok
+"""
 
-        if not changed:
-            new_lines.append(
-                "password requisite pam_pwhistory.so remember=24 enforce_for_root try_first_pass use_authtok\n"
-            )
+        with open(PWHISTORY_PROFILE, "w") as f:
+            f.write(profile_content)
 
-        with open(COMMON_PASSWORD, "w") as f:
-            f.writelines(new_lines)
+        run_command(["pam-auth-update", "--enable", "pwhistory", "--force"])
 
-        logger.info("[apply_password_history_use_authtok] use_authtok eklendi")
-        return True, "pam_pwhistory.so use_authtok ile güncellendi"
+        final_ok, final_msg = check_password_history_use_authtok()
+        if final_ok:
+            return True, f"use_authtok eklendi ve doğrulandı ({final_msg})"
+        else:
+            return False, f"Uygulama sonrası hala uyumsuz: {final_msg}"
+
     except Exception as e:
         msg = f"Hata: {str(e)}"
-        logger.error(f"[apply_password_history_use_authtok] Hata: {msg}")
-        return False, {msg}
+        logger.error(f"[apply_password_history_use_authtok] {msg}")
+        return False, msg
+
+
+COMMON_PAM_FILES = [
+    "/etc/pam.d/common-password",
+    "/etc/pam.d/common-auth",
+    "/etc/pam.d/common-account",
+    "/etc/pam.d/common-session",
+    "/etc/pam.d/common-session-noninteractive",
+]
+UNIX_PROFILE = "/usr/share/pam-configs/unix"
 
 
 
 def check_pam_unix_nullok():
     """
-    pam_unix.so satırlarında nullok var mı kontrol eder.
-    CIS 5.3.3.4.1 gereği nullok olmamalıdır.
+    CIS 5.3.3.4.1 - Ensure pam_unix does not include nullok
     """
-    check_cmd = [
+    grep_cmd = [
         "grep", "-PHs",
-        r'^[[:space:]]*[^#[:space:]]+[[:space:]]+pam_unix\.so.*nullok\b',
-        "/etc/pam.d/common-password",
-        "/etc/pam.d/common-auth",
-        "/etc/pam.d/common-account",
-        "/etc/pam.d/common-session",
-        "/etc/pam.d/common-session-noninteractive"
+        r'^\s*[^#\n\r]+\s+pam_unix\.so\s+.*\bnullok\b',
+        *COMMON_PAM_FILES
     ]
-    success, output = run_command(check_cmd)
+    success, output = run_command(grep_cmd)
 
     if success and output.strip():
-        logger.warning(f"[CHECK][pam_unix_nullok] Uyumsuzluk bulundu. nullok geçiyor: {output.strip()}")
-        return False, output.strip()
+        return False, f"Uyumsuzluk bulundu: {output.strip()}"
     else:
-        logger.info("[CHECK][pam_unix_nullok] Uyumlu. pam_unix.so satırlarında nullok yok.")
-        return True, "Uyumlu"
+        return True, "Uyumlu: pam_unix.so satırlarında nullok bulunmuyor."
 
 
 def apply_pam_unix_nullok(username=None, param=None):
     """
-    Uyumsuzluk varsa pam_unix.so satırlarından nullok'u kaldırır.
-    CIS 5.3.3.4.1 gereği nullok olmamalıdır.
+    CIS 5.3.3.4.1 - Ensure pam_unix does not include nullok
+      1. /usr/share/pam-configs/unix dosyasından nullok kaldırılır
+      2. pam-auth-update --enable unix çağrılır
     """
+    compliant, msg = check_pam_unix_nullok()
+    if compliant:
+        logger.info(f"[apply_pam_unix_nullok] {msg}")
+        return True, msg
+
+    logger.info(f"[apply_pam_unix_nullok] Uyumsuz: {msg} → Düzeltiliyor...")
+
     try:
-        compliant, details = check_pam_unix_nullok()
-        if compliant:
-            logger.info("[APPLY][pam_unix_nullok] Sistem zaten uyumlu, işlem yapılmadı.")
-            return True, "Zaten uyumlu"
+        if not os.path.exists(UNIX_PROFILE):
+            return False, f"{UNIX_PROFILE} bulunamadı."
 
-        logger.info("[APPLY][pam_unix_nullok] Uyumsuzluk tespit edildi, düzeltme başlatılıyor...")
+        with open(UNIX_PROFILE, "r") as f:
+            lines = f.readlines()
 
-        fix_cmd = [
-            "bash", "-c",
-            "for file in /etc/pam.d/common-{password,auth,account,session,session-noninteractive}; do "
-            "if grep -q 'pam_unix.so' \"$file\"; then "
-            "sed -i 's/\\<nullok\\>//g' \"$file\"; "
-            "fi; "
-            "done"
-        ]
-        success, output = run_command(fix_cmd)
+        new_lines = []
+        changed = False
+        for line in lines:
+            if "pam_unix.so" in line and "nullok" in line and not line.strip().startswith("#"):
+                new_line = re.sub(r"\bnullok\b", "", line)
+                new_lines.append(new_line)
+                changed = True
+            else:
+                new_lines.append(line)
 
-        if not success:
-            logger.error(f"[APPLY][pam_unix_nullok] Düzenleme başarısız oldu. Hata: {output}")
-            return False, f"Hata: {output}"
+        if changed:
+            with open(UNIX_PROFILE, "w") as f:
+                f.writelines(new_lines)
 
-        compliant, details = check_pam_unix_nullok()
-        if compliant:
-            logger.info("[APPLY][pam_unix_nullok] nullok başarıyla kaldırıldı ve sistem uyumlu hale getirildi.")
-            return True, "Düzeltme uygulandı"
+            run_command(["pam-auth-update", "--enable", "unix", "--force"])
+            logger.info("[apply_pam_unix_nullok] nullok kaldırıldı ve pam-auth-update çalıştırıldı.")
+
+        final_ok, final_msg = check_pam_unix_nullok()
+        if final_ok:
+            return True, "nullok kaldırıldı, sistem CIS'e uyumlu hale getirildi."
         else:
-            logger.error("[APPLY][pam_unix_nullok] Düzeltme başarısız, nullok hala mevcut.")
-            return False, "Düzeltme başarısız"
+            return False, f"Düzeltme sonrası hala uyumsuz: {final_msg}"
+
     except Exception as e:
         msg = f"Hata: {str(e)}"
-        logger.error(f"[APPLY][pam_unix_nullok] Hata: {msg}")
-        return False, f"Hata: {msg}"
+        logger.error(f"[apply_pam_unix_nullok] {msg}")
+        return False, msg
 
 
 
 def check_pam_unix_remember():
     """
-    pam_unix.so satırlarında remember=<N> var mı kontrol eder.
-    CIS 5.3.3.4.2 gereği remember kullanılmamalıdır.
+    CIS 5.3.3.4.2 - Ensure pam_unix does not include remember
+    Hem /etc/pam.d/common-* hem de /usr/share/pam-configs/* altında kontrol eder.
     """
-    check_cmd = [
+    # 1) /etc/pam.d/common-*
+    cmd_common = [
         "grep", "-PHs", "--",
-        r'^[[:space:]]*[^#[:space:]]+[[:space:]]+pam_unix\.so.*remember=[0-9]\+',
-        "/etc/pam.d/common-password",
-        "/etc/pam.d/common-auth",
-        "/etc/pam.d/common-account",
-        "/etc/pam.d/common-session",
-        "/etc/pam.d/common-session-noninteractive"
+        r'^[[:space:]]*[^#[:space:]]+[[:space:]]+pam_unix\.so.*remember=[0-9]+',
+        *COMMON_PAM_FILES
     ]
-    success, output = run_command(check_cmd)
+    ok1, out1 = run_command(cmd_common)
+    txt1 = (out1 or "").strip()
 
-    if success and output.strip():
-        logger.warning(f"[CHECK][pam_unix_remember] Uyumsuzluk bulundu. remember kullanılıyor: {output.strip()}")
-        return False, output.strip()
-    else:
-        logger.info("[CHECK][pam_unix_remember] Uyumlu. pam_unix.so satırlarında remember yok.")
-        return True, "Uyumlu"
+    # 2) /usr/share/pam-configs/*
+    cmd_profiles = [
+        "grep", "-PHs", "--",
+        r'^\h*.*pam_unix\.so\h+.*remember=\d+\b',
+        "/usr/share/pam-configs/*"
+    ]
+    ok2, out2 = run_command(cmd_profiles)
+    txt2 = (out2 or "").strip()
+
+    if (ok1 and txt1) or (ok2 and txt2):
+        details = "\n".join([x for x in [txt1, txt2] if x])
+        return False, f"Uyumsuz: pam_unix.so satırlarında remember= bulunuyor:\n{details}"
+
+    return True, "Uyumlu: pam_unix.so için remember= argümanı yok."
 
 
 def apply_pam_unix_remember(username=None, param=None):
     """
-    Uyumsuzluk varsa pam_unix.so satırlarından remember=<N> kısmını kaldırır.
-    CIS 5.3.3.4.2 gereği remember kullanılmamalıdır.
+    CIS 5.3.3.4.2 - Ensure pam_unix does not include remember
+    - /etc/pam.d/common-* içinden remember=<N> temizlenir
+    - /usr/share/pam-configs/* içinden remember=<N> temizlenir
+    - 'pam-auth-update --enable unix' ile yeniden oluşturulur
     """
-    try:
-        compliant, details = check_pam_unix_remember()
-        if compliant:
-            logger.info("[APPLY][pam_unix_remember] Sistem zaten uyumlu, işlem yapılmadı.")
-            return True, "Zaten uyumlu"
+    ok, msg = check_pam_unix_remember()
+    if ok:
+        return True, f"Zaten uyumlu: {msg}"
 
-        logger.info("[APPLY][pam_unix_remember] Uyumsuzluk tespit edildi, düzeltme başlatılıyor...")
+    # 1) /etc/pam.d/common-* dosyaları: remember=<N> temizle
+    #    Hem "remember=5" hem de boşluk varyasyonlarını yakalayalım.
+    fix_common = [
+        "bash", "-c",
+        r"for f in /etc/pam.d/common-{password,auth,account,session,session-noninteractive}; do "
+        r"  if [ -f \"$f\" ]; then "
+        r"    sed -i -E 's/\<remember=[0-9]+//g' \"$f\"; "
+        r"    sed -i -E 's/[[:space:]]+/ /g' \"$f\"; "  # fazla boşluk temizleme (opsiyonel)
+        r"  fi; "
+        r"done"
+    ]
+    ok1, out1 = run_command(fix_common)
+    if not ok1:
+        return False, f"/etc/pam.d/common-* düzenlenemedi: {out1}"
 
-        fix_cmd = [
-            "bash", "-c",
-            "for file in /etc/pam.d/common-{password,auth,account,session,session-noninteractive}; do "
-            "if grep -q 'pam_unix.so' \"$file\"; then "
-            "sed -i -E 's/remember=[0-9]+//g' \"$file\"; "
-            "fi; "
-            "done"
-        ]
-        success, output = run_command(fix_cmd)
+    # 2) /usr/share/pam-configs/* içinde pam_unix satırlarından remember= kaldır
+    fix_profiles = [
+        "bash", "-c",
+        r"for f in /usr/share/pam-configs/*; do "
+        r"  if [ -f \"$f\" ] && grep -qE 'pam_unix\.so' \"$f\"; then "
+        r"    sed -i -E 's/\<remember=[0-9]+//g' \"$f\"; "
+        r"  fi; "
+        r"done"
+    ]
+    ok2, out2 = run_command(fix_profiles)
+    if not ok2:
+        return False, f"/usr/share/pam-configs/* düzenlenemedi: {out2}"
 
-        if not success:
-            logger.error(f"[APPLY][pam_unix_remember] Düzenleme başarısız oldu. Hata: {output}")
-            return False, f"Hata: {output}"
+    # 3) PAM dosyalarını profilden yeniden üret
+    ok3, out3 = run_command(["pam-auth-update", "--enable", "unix", "--force"])
+    if not ok3:
+        # Bazı sistemlerde --force yok; fallback
+        ok3b, out3b = run_command(["pam-auth-update", "--enable", "unix"])
+        if not ok3b:
+            return False, f"pam-auth-update başarısız: {out3 or out3b}"
 
-        compliant, details = check_pam_unix_remember()
-        if compliant:
-            logger.info("[APPLY][pam_unix_remember] remember başarıyla kaldırıldı ve sistem uyumlu hale getirildi.")
-            return True, "Düzeltme uygulandı"
-        else:
-            logger.error("[APPLY][pam_unix_remember] Düzeltme başarısız, remember hala mevcut.")
-            return False, "Düzeltme başarısız"
-    except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"[APPLY][pam_unix_remember] Hata: {msg}")
-        return False, f"Hata: {msg}"
+    # 4) Son kontrol
+    okF, msgF = check_pam_unix_remember()
+    if okF:
+        return True, "remember argümanı tüm kaynaklardan kaldırıldı ve uyum doğrulandı."
+    return False, f"Düzeltme sonrası hala uyumsuz: {msgF}"
 
 
 
