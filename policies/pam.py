@@ -183,7 +183,7 @@ def apply_libpam_pwquality(username=None, param=None):
         if not success:
             return False, f"apt-get update çalıştırılamadı: {output}"
 
-        success, output = run_command(["apt-get", "install", "-y", "libpam-pwquality"])
+        success, output = run_command(["apt", "install", "-y", "libpam-pwquality"])
         if not success:
             return False, f"apt-get install çalıştırılamadı: {output}"
 
@@ -265,14 +265,9 @@ def check_pam_faillock_enabled():
     """
     try:
         # common-auth ve common-account içinde pam_faillock satırlarını ara
-        result = subprocess.run(
-            ["grep", "-P", r"\bpam_faillock\.so\b", "/etc/pam.d/common-auth", "/etc/pam.d/common-account"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        
-        if result.returncode == 0 and "pam_faillock.so" in result.stdout:
+        ok, output = run_command(["grep", "-P", r"\bpam_faillock\.so\b",
+                          "/etc/pam.d/common-auth", "/etc/pam.d/common-account"])
+        if ok and "pam_faillock.so" in output:
             return True, "pam_faillock modülü etkin."
         else:
             return False, "pam_faillock modülü etkin değil."
@@ -336,16 +331,28 @@ Account:
 
 
 def check_pam_pwquality():
+    """
+    CIS 5.3.2.3 - Ensure pam_pwquality module is enabled
+    /etc/pam.d/common-password içinde pam_pwquality.so satırı var mı kontrol eder.
+    """
     try:
+        if not os.path.exists("/usr/share/pam-configs/pwquality"):
+            return False, "pwquality profili bulunamadı (/usr/share/pam-configs/pwquality yok)."
+
         success, output = run_command(["grep", "-P", r"\bpam_pwquality\.so\b", "/etc/pam.d/common-password"])
         if not success:
             return False, f"grep -P çalıştırılamadı: {output}"
-        if "pam_pwquality.so" in output:
-            logger.info("[check_pam_pwquality] pam_pwquality.so modülü zaten etkin.")
-            return True, "pam_pwquality.so modülü etkin."
-        else:
-            logger.warning("[check_pam_pwquality] pam_pwquality.so modülü etkin değil.")
-            return False, "pam_pwquality.so modülü etkin değil."
+
+        for line in output.splitlines():
+            if re.match(r'^\s*#', line):
+                continue
+            if "pam_pwquality.so" in line:
+                logger.info("[check_pam_pwquality] pam_pwquality.so modülü zaten etkin.")
+                return True, "pam_pwquality.so modülü etkin."
+        
+        logger.warning("[check_pam_pwquality] pam_pwquality.so modülü etkin değil.")
+        return False, "pam_pwquality.so modülü etkin değil."
+    
     except Exception as e:
         logger.error(f"[check_pam_pwquality] Hata: {e}")
         return False, f"Hata: {e}"
@@ -354,28 +361,27 @@ def check_pam_pwquality():
 
 def apply_pam_pwquality(username=None, param=None):
     """
-    5.3.2.3 Ensure pam_pwquality module is enabled
-    Apply pam_pwquality.so module via pam-auth-update.
+    CIS 5.3.2.3 - Ensure pam_pwquality module is enabled
+    /usr/share/pam-configs/pwquality profilini oluşturur ve pam-auth-update ile etkinleştirir.
     """
     try:
         is_enabled, msg = check_pam_pwquality()
         if is_enabled:
             return True, f"Değişiklik gerekmedi: {msg}"
 
-    
         profile_path = "/usr/share/pam-configs/pwquality"
-        if not os.path.exists(profile_path):
-            profile_content = [
-                "Name: Pwquality password strength checking",
-                "Default: yes",
-                "Priority: 1024",
-                "Conflicts: cracklib",
-                "Password-Type: Primary",
-                "Password:",
-                " requisite pam_pwquality.so retry=3"
-            ]
-            with open(profile_path, "w") as f:
-                f.write("\n".join(profile_content) + "\n")
+        # CIS örneğine uygun profil dosyası oluştur
+        profile_content = [
+            "Name: Pwquality password strength checking",
+            "Default: yes",
+            "Priority: 1024",
+            "Conflicts: cracklib",
+            "Password-Type: Primary",
+            "Password:",
+            " requisite pam_pwquality.so retry=3"
+        ]
+        with open(profile_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(profile_content) + "\n")
 
         success, output = run_command(["pam-auth-update", "--enable", "pwquality"])
         if not success:
@@ -402,14 +408,17 @@ PWHISTORY_LINE = "requisite pam_pwhistory.so remember=24 enforce_for_root try_fi
 def check_pwhistory_enabled():
     """
     CIS 5.3.2.4 - Ensure pam_pwhistory module is enabled
-    /etc/pam.d/common-password içinde pam_pwhistory.so satırını arar.
     """
+    if not os.path.exists(PWHISTORY_PROFILE_PATH):
+        return False, f"{PWHISTORY_PROFILE_PATH} profili bulunamadı."
 
     success, output = run_command(["grep", "-E", r"pam_pwhistory\.so", "/etc/pam.d/common-password"])
     if not success:
         return False, f"grep çalıştırılamadı: {output}"
 
     for line in output.splitlines():
+        if re.match(r'^\s*#', line):  # yorum satırlarını atla
+            continue
         if "pam_pwhistory.so" in line:
             remember_match = re.search(r"remember=\d+", line)
             enforce_for_root = "enforce_for_root" in line
@@ -435,25 +444,22 @@ def apply_pwhistory(username=None, param=None):
 
     try:
         # Profil dosyası yoksa oluştur
-        if not os.path.exists(PWHISTORY_PROFILE_PATH):
-            profile_content = "\n".join([
-                "Name: pwhistory password history checking",
-                "Default: yes",
-                "Priority: 1024",
-                "Password-Type: Primary",
-                "Password:",
-                f"  {PWHISTORY_LINE}"
-            ])
-            with open(PWHISTORY_PROFILE_PATH, "w") as f:
-                f.write(profile_content + "\n")
-            logger.info(f"[apply_pwhistory] Oluşturulan profil: {PWHISTORY_PROFILE_PATH}")
+        profile_content = "\n".join([
+            "Name: pwhistory password history checking",
+            "Default: yes",
+            "Priority: 1024",
+            "Password-Type: Primary",
+            "Password:",
+            f" {PWHISTORY_LINE}"
+        ])
+        with open(PWHISTORY_PROFILE_PATH, "w", encoding="utf-8") as f:
+            f.write(profile_content + "\n")
+        logger.info(f"[apply_pwhistory] Profil oluşturuldu: {PWHISTORY_PROFILE_PATH}")
 
-        # pam-auth-update ile etkinleştir
         success, output = run_command(["pam-auth-update", "--enable", PWHISTORY_PROFILE_NAME])
         if not success:
             return False, f"pam-auth-update çalıştırılamadı: {output}"
 
-        # Tekrar kontrol et
         is_enabled, msg = check_pwhistory_enabled()
         if is_enabled:
             return True, "pam_pwhistory modülü başarıyla etkinleştirildi."
@@ -469,13 +475,15 @@ def apply_pwhistory(username=None, param=None):
 
 
 FAILLOCK_CONF = "/etc/security/faillock.conf"
-DEFAULT_DENY = 5  # site policy default
+DEFAULT_DENY = 5
 
 def check_failed_attempts_lockout(expected_deny=DEFAULT_DENY):
     """
-    5.3.3.1.1 Ensure password failed attempts lockout is configured 
-    Parola hatalı giriş kilitleme ayarını kontrol eder.
-    expected_deny: izin verilen maksimum hatalı giriş sayısı (ör: 5)
+    CIS 5.3.3.1.1 - Ensure password failed attempts lockout is configured
+    Kontroller:
+      1. /etc/security/faillock.conf içinde deny değeri 5 veya altı olmalı.
+      2. /etc/pam.d/common-auth içinde pam_faillock.so satırlarında deny= parametresi olmamalı.
+      3. pam_faillock.so modülü common-auth ve common-account dosyalarında tanımlı olmalı.
     """
     if not os.path.exists(FAILLOCK_CONF):
         return False, f"{FAILLOCK_CONF} bulunamadı."
@@ -483,49 +491,65 @@ def check_failed_attempts_lockout(expected_deny=DEFAULT_DENY):
     try:
         with open(FAILLOCK_CONF, "r") as f:
             lines = f.readlines()
-    except Exception as e:
-        return False, f"faillock.conf okunamadı: {e}"
 
-    deny_value = None
-    for line in lines:
-        if line.strip().startswith("deny"):
-            try:
-                deny_value = int(line.split("=")[1].strip())
-            except Exception:
+        deny_value = None
+        for line in lines:
+            if re.match(r'^\s*#', line):
                 continue
+            if re.match(r'^\s*deny\s*=', line):
+                try:
+                    deny_value = int(line.split("=")[1].strip())
+                except Exception:
+                    continue
 
-    if deny_value is None:
-        return False, "deny parametresi bulunamadı."
-    elif deny_value > expected_deny:
-        return False, f"deny={deny_value}, beklenen en fazla {expected_deny}."
-    else:
-        return True, f"deny={deny_value}, uyumlu."
+        if deny_value is None:
+            return False, "deny parametresi faillock.conf içinde bulunamadı."
+        if deny_value > expected_deny:
+            return False, f"deny={deny_value}, beklenen ≤ {expected_deny}."
+
+        bad_lines = subprocess.run([
+            "grep", "-Pi",
+            r'^\s*auth.*pam_faillock\.so.*\bdeny\s*=\s*(0|[6-9]|[1-9][0-9]+)\b',
+            "/etc/pam.d/common-auth"
+        ], stdout=subprocess.PIPE, text=True)
+        if bad_lines.stdout.strip():
+            return False, f"common-auth içinde uygunsuz deny parametresi bulundu:\n{bad_lines.stdout}"
+
+        mod_check = subprocess.run(
+            ["grep", "-H", "pam_faillock.so", "/etc/pam.d/common-auth", "/etc/pam.d/common-account"],
+            stdout=subprocess.PIPE, text=True
+        )
+        if not mod_check.stdout.strip():
+            return False, "pam_faillock.so modülü PAM zincirine dahil edilmemiş."
+
+        return True, f"deny={deny_value}, yapılandırma CIS gereksinimlerine uygun."
+
+    except Exception as e:
+        return False, f"Hata (check_failed_attempts_lockout): {e}"
+
+
 
 
 def apply_failed_attempts_lockout(username=None, param=None):
     """
-    5.3.3.1.1 Ensure password failed attempts lockout is configured 
-    Parola hatalı giriş kilitleme ayarını uygular.
-    param: {"deny": 5} gibi bir sözlük alır.
+    CIS 5.3.3.1.1 - Ensure password failed attempts lockout is configured
+    Hem faillock.conf dosyasını hem PAM modül entegrasyonunu düzenler.
     """
     try:
         param = param or {}
         expected_deny = param.get("deny", DEFAULT_DENY)
 
-        is_ok, msg = check_failed_attempts_lockout(expected_deny)
-        if is_ok:
-            return True, f"Ayar zaten doğru: {msg}"
-
-    
+        ok, msg = check_failed_attempts_lockout(expected_deny)
+        if ok:
+            return True, f"Ayar zaten uygun: {msg}"
 
         backup_path = FAILLOCK_CONF + ".bak"
         shutil.copy2(FAILLOCK_CONF, backup_path)
 
-        new_lines = []
-        deny_found = False
+        new_lines, deny_found = [], False
         with open(FAILLOCK_CONF, "r") as f:
             for line in f:
-                if line.strip().startswith("deny"):
+                if re.match(r'^\s*deny\s*=', line):
                     new_lines.append(f"deny = {expected_deny}\n")
                     deny_found = True
                 else:
@@ -537,25 +561,45 @@ def apply_failed_attempts_lockout(username=None, param=None):
         with open(FAILLOCK_CONF, "w") as f:
             f.writelines(new_lines)
 
+        common_auth = "/etc/pam.d/common-auth"
+        common_account = "/etc/pam.d/common-account"
+
+        def ensure_line(file_path, pattern, new_line, append_end=False):
+            with open(file_path, "r") as f:
+                content = f.read()
+            if pattern not in content:
+                with open(file_path, "a" if append_end else "r+") as f:
+                    if not append_end:
+                        f.seek(0, 0)
+                        f.write(new_line + "\n" + content)
+                    else:
+                        f.write("\n" + new_line)
+
+        ensure_line(common_auth, "pam_faillock.so preauth", "auth requisite pam_faillock.so preauth")
+        ensure_line(common_auth, "pam_faillock.so authfail", "auth [default=die] pam_faillock.so authfail", append_end=True)
+        ensure_line(common_account, "pam_faillock.so", "account required pam_faillock.so", append_end=True)
+
         pam_dir = "/usr/share/pam-configs"
         if os.path.exists(pam_dir):
-            for root, dirs, files in os.walk(pam_dir):
+            for root, _, files in os.walk(pam_dir):
                 for fname in files:
                     fpath = os.path.join(root, fname)
                     with open(fpath, "r") as f:
                         content = f.read()
                     if "pam_faillock.so" in content and "deny=" in content:
-                        fixed = []
-                        for line in content.splitlines():
-                            if "pam_faillock.so" in line and "deny=" in line:
-                                parts = [p for p in line.split() if not p.startswith("deny=")]
-                                fixed.append(" ".join(parts))
-                            else:
-                                fixed.append(line)
+                        cleaned = "\n".join(
+                            " ".join(p for p in line.split() if not p.startswith("deny="))
+                            for line in content.splitlines()
+                        )
                         with open(fpath, "w") as f:
-                            f.write("\n".join(fixed))
+                            f.write(cleaned)
 
-        return True, f"{FAILLOCK_CONF} dosyasında deny = {expected_deny} olarak ayarlandı."
+        final_ok, final_msg = check_failed_attempts_lockout(expected_deny)
+        if final_ok:
+            return True, f"faillock.conf ve PAM yapılandırması başarıyla güncellendi. ({final_msg})"
+        else:
+            return False, f"Düzenleme yapıldı ancak doğrulama başarısız: {final_msg}"
+
     except Exception as e:
         msg = f"Hata: {str(e)}"
         logger.error(f"[CIS 5.3.3.1.1][APPLY] {msg}")
@@ -567,12 +611,13 @@ BACKUP_FILE = "/etc/security/faillock.conf.bak"
 
 def check_unlock_time(param=None):
     """
-    CIS 5.3.3.1.2 - Kontrol
-    unlock_time >= 900 saniye (15 dk) veya 0 olmalı.
+    CIS 5.3.3.1.2 - Ensure password unlock time is configured
+    Gereksinimler:
+      - /etc/security/faillock.conf içinde unlock_time >= 900 veya 0
+      - /etc/pam.d/common-auth içinde pam_faillock.so satırlarında unlock_time parametresi olmamalı
     """
     try:
-        expected_minutes = int((param or {}).get("unlock_time", 15))
-        expected_seconds = expected_minutes * 60
+        expected_seconds = max(int((param or {}).get("unlock_time", 900)), 900)
 
         if not os.path.exists(FAILLOCK_CONF):
             return False, f"{FAILLOCK_CONF} bulunamadı."
@@ -582,13 +627,24 @@ def check_unlock_time(param=None):
 
         match = re.search(r'^\s*unlock_time\s*=\s*(\d+)', content, re.MULTILINE)
         if not match:
-            return False, "unlock_time parametresi bulunamadı."
+            return False, "unlock_time parametresi faillock.conf içinde bulunamadı."
 
         current_value = int(match.group(1))
-        if current_value == 0 or current_value >= 900:
-            return True, f"unlock_time uygun: {current_value} saniye"
-        else:
-            return False, f"unlock_time uygunsuz: {current_value} saniye (>=900 veya 0 olmalı)"
+        if not (current_value == 0 or current_value >= 900):
+            return False, f"unlock_time={current_value} (>=900 veya 0 olmalı)"
+
+        # PAM içinde uygunsuz unlock_time var mı kontrol et
+        bad_lines = subprocess.run([
+            "grep", "-Pi",
+            r'^\s*auth.*pam_faillock\.so.*\bunlock_time\s*=\s*([1-9]|[1-8][0-9]{1,2})\b',
+            "/etc/pam.d/common-auth"
+        ], stdout=subprocess.PIPE, text=True)
+
+        if bad_lines.stdout.strip():
+            return False, f"common-auth içinde uygunsuz unlock_time parametresi bulundu:\n{bad_lines.stdout}"
+
+        return True, f"unlock_time uygun: {current_value} saniye"
+
     except Exception as e:
         return False, f"Hata: {str(e)}"
 
@@ -601,8 +657,7 @@ def apply_unlock_time(username=None, param=None):
     """
     try:
         param = param or {}
-        expected_minutes = int(param.get("unlock_time", 15))
-        expected_seconds = max(expected_minutes * 60, 900)  # CIS minimum enforce
+        expected_seconds = max(int(param.get("unlock_time", 900)), 900)
 
         ok, msg = check_unlock_time(param)
         if ok:
@@ -610,23 +665,43 @@ def apply_unlock_time(username=None, param=None):
 
         shutil.copy2(FAILLOCK_CONF, BACKUP_FILE)
 
-        updated_lines = []
-        found = False
+        lines, found = [], False
         with open(FAILLOCK_CONF, "r") as f:
             for line in f:
                 if line.strip().startswith("unlock_time"):
-                    updated_lines.append(f"unlock_time = {expected_seconds}\n")
+                    lines.append(f"unlock_time = {expected_seconds}\n")
                     found = True
                 else:
-                    updated_lines.append(line)
+                    lines.append(line)
 
         if not found:
-            updated_lines.append(f"\nunlock_time = {expected_seconds}\n")
+            lines.append(f"\nunlock_time = {expected_seconds}\n")
 
         with open(FAILLOCK_CONF, "w") as f:
-            f.writelines(updated_lines)
+            f.writelines(lines)
 
-        return True, f"unlock_time {expected_seconds} saniye ({expected_seconds//60} dakika) olarak ayarlandı."
+        pam_dirs = ["/usr/share/pam-configs", "/etc/pam.d"]
+        for base in pam_dirs:
+            if not os.path.exists(base):
+                continue
+            for root, _, files in os.walk(base):
+                for fname in files:
+                    fpath = os.path.join(root, fname)
+                    try:
+                        with open(fpath, "r") as f:
+                            content = f.read()
+                        if "pam_faillock.so" in content and "unlock_time=" in content:
+                            cleaned = "\n".join(
+                                " ".join(p for p in line.split() if not p.startswith("unlock_time="))
+                                for line in content.splitlines()
+                            )
+                            with open(fpath, "w") as f:
+                                f.write(cleaned)
+                    except Exception:
+                        continue
+
+        return True, f"unlock_time {expected_seconds} saniye (>=900) olarak ayarlandı ve PAM dosyaları temizlendi."
+
     except Exception as e:
         msg = f"Hata: {str(e)}"
         logger.error(f"[CIS 5.3.3.1.2][APPLY] {msg}")
@@ -739,37 +814,47 @@ PAM_CONFIG_DIR = "/usr/share/pam-configs/"
 
 def check_pwquality_difok(difok_min=2):
     """
-    pwquality.conf ve pwquality.conf.d içindeki difok ayarını kontrol eder.
+    Gereksinimler:
+      - difok >= 2 pwquality.conf veya pwquality.conf.d altında tanımlı olmalı
+      - /etc/pam.d/common-password içinde difok <=1 olmamalı
     """
     try:
         config_files = [PWQUALITY_CONF]
-
         if os.path.isdir(PWQUALITY_CONF_DIR):
-            for f in os.listdir(PWQUALITY_CONF_DIR):
-                full_path = os.path.join(PWQUALITY_CONF_DIR, f)
-                if os.path.isfile(full_path) and f.endswith(".conf"):
-                    config_files.append(full_path)
+            config_files.extend(
+                os.path.join(PWQUALITY_CONF_DIR, f)
+                for f in os.listdir(PWQUALITY_CONF_DIR)
+                if f.endswith(".conf")
+            )
 
-        found_value = None
-        success, output = run_command([
-            "grep", "-Psi", r"^\s*difok\s*=\s*[0-9]+", *config_files
-        ])
-
+        success, output = run_command(["grep", "-Psi", r"^\s*difok\s*=\s*\d+", *config_files])
+        valid = False
         if success and output:
             for line in output.splitlines():
                 try:
                     value = int(line.strip().split("=")[-1])
                     if value >= difok_min:
-                        logger.info(f"[check_pwquality_difok] Uygun difok bulundu: {value}")
-                        return True
-                except ValueError:
+                        valid = True
+                        break
+                except Exception:
                     continue
 
-        logger.warning("[check_pwquality_difok] Uygun difok değeri bulunamadı.")
-        return False
+        if not valid:
+            return False, "pwquality.conf veya .d dizininde uygun difok değeri bulunamadı."
+
+        pam_result = subprocess.run([
+            "grep", "-Psi",
+            r"^\s*password.*pam_pwquality\.so.*difok\s*=\s*([0-1])\b",
+            "/etc/pam.d/common-password"
+        ], stdout=subprocess.PIPE, text=True)
+
+        if pam_result.stdout.strip():
+            return False, f"common-password içinde uygunsuz difok bulundu:\n{pam_result.stdout}"
+
+        return True, "difok yapılandırması CIS gereksinimine uygun."
+
     except Exception as e:
-        logger.error(f"[check_pwquality_difok] Hata: {e}")
-        return False
+        return False, f"Hata: {e}"
 
 
 
@@ -818,24 +903,37 @@ CIS_MINLEN = 14  # CIS önerilen minimum
 def check_min_password_length(param=None):
     """
     CIS 5.3.3.2.2 - Ensure minimum password length is configured
+    Gereksinimler:
+      - /etc/security/pwquality.conf veya .d/*.conf içinde minlen >= 14 olmalı
+      - /etc/pam.d/common-password içinde pam_pwquality.so satırlarında minlen <=13 olmamalı
     """
     try:
         minlen = CIS_MINLEN
         if param and "minlen" in param:
             minlen = max(CIS_MINLEN, int(param["minlen"]))
 
-        logger.info(f"[check_min_password_length] Kontrol ediliyor, minlen >= {minlen}")
+        logger.info(f"[check_min_password_length] minlen >= {minlen} kontrol ediliyor...")
 
         success, output = run_command([
             "grep", "-Psi",
-            rf"^\h*minlen\h*=\h*({minlen}|[1-9][0-9]+)\b",
+            rf"^\h*minlen\h*=\h*(1[4-9]|[2-9][0-9]+)\b",
             PWQUALITY_CONF,
             os.path.join(PWQUALITY_CONF_DIR, "*.conf")
         ])
-        if success and output:
-            return True, f"Mevcut minlen değeri {minlen} veya üstünde."
-        else:
-            return False, f"Mevcut minlen değeri {minlen} altında."
+        if not (success and output):
+            return False, f"pwquality.conf veya .d dizininde minlen {minlen} altında."
+
+        pam_check = subprocess.run([
+            "grep", "-Psi",
+            r"^\s*password.*pam_pwquality\.so.*minlen\s*=\s*([0-9]|1[0-3])\b",
+            "/etc/pam.d/common-password"
+        ], stdout=subprocess.PIPE, text=True)
+
+        if pam_check.stdout.strip():
+            return False, f"common-password içinde düşük minlen değeri bulundu:\n{pam_check.stdout}"
+
+        return True, f"minlen >= {minlen} doğru yapılandırılmış."
+
     except Exception as e:
         return False, f"Hata: {e}"
 
@@ -853,11 +951,9 @@ def apply_min_password_length(username=None, param=None):
         if ok:
             return True, f"Zaten uygun: {msg}"
 
-        # eski değerleri kapat
-        run_command(["sed", "-ri", r"s/^\s*minlen\s*=/# &/", PWQUALITY_CONF])
+        run_command(["sed", "-ri", r"/^\s*minlen\s*=/d", PWQUALITY_CONF])
 
-        if not os.path.isdir(PWQUALITY_CONF_DIR):
-            os.makedirs(PWQUALITY_CONF_DIR)
+        os.makedirs(PWQUALITY_CONF_DIR, exist_ok=True)
 
         with open(PWQUALITY_FILE, "w") as f:
             f.write(f"minlen = {minlen}\n")
@@ -870,9 +966,10 @@ def apply_min_password_length(username=None, param=None):
         if success and output:
             for file in output.splitlines():
                 run_command(["sed", "-ri", r"s/\bminlen\s*=\s*\d+\b//g", file])
-                logger.info(f"[apply_min_password_length] PAM modülünden minlen parametresi temizlendi: {file}")
+                logger.info(f"[apply_min_password_length] PAM modülünden minlen temizlendi: {file}")
 
-        return True, f"minlen {minlen} olarak ayarlandı."
+        return True, f"minlen {minlen} olarak ayarlandı ve eski tanımlar temizlendi."
+
     except Exception as e:
         msg = f"Hata: {str(e)}"
         logger.error(f"[CIS 5.3.3.2.2 ][APPLY] {msg}")
@@ -887,70 +984,85 @@ def check_pw_complexity(param: dict) -> (bool, str):
     CIS 5.3.3.2.3 - Ensure password complexity is configured
     Kontrol edilen parametreler: minclass, dcredit, ucredit, lcredit, ocredit
     """
-    conf_files = [PWQUALITY_CONF]
+    try:
+        conf_files = [PWQUALITY_CONF]
+        if os.path.isdir("/etc/security/pwquality.conf.d/"):
+            conf_files.extend(
+                os.path.join("/etc/security/pwquality.conf.d/", f)
+                for f in os.listdir("/etc/security/pwquality.conf.d/")
+                if f.endswith(".conf")
+            )
 
-    if os.path.isdir("/etc/security/pwquality.conf.d/"):
-        for f in os.listdir("/etc/security/pwquality.conf.d/"):
-            if f.endswith(".conf"):
-                conf_files.append(os.path.join("/etc/security/pwquality.conf.d/", f))
+        content = ""
+        for file in conf_files:
+            if not os.path.exists(file):
+                continue
+            try:
+                with open(file, "r") as f:
+                    content += f.read() + "\n"
+            except Exception:
+                continue
 
-    content = ""
-    for file in conf_files:
-        try:
-            with open(file, "r") as f:
-                content += f.read() + "\n"
-        except Exception as e:
-            logger.error(f"[check_pw_complexity] Dosya okunamadı: {file}, Hata: {str(e)}")
+        for key, expected in param.items():
+            match = re.search(rf'^\s*{key}\s*=\s*(-?\d+)', content, re.MULTILINE)
+            if not match:
+                return False, f"{key} parametresi bulunamadı."
+            value = int(match.group(1))
+            if key == "minclass" and value < int(expected):
+                return False, f"{key}={value}, beklenen ≥ {expected}"
+            elif key != "minclass" and value > 0:
+                return False, f"{key}={value}, 0 veya negatif olmalı (ör: -1)"
 
-    # Parametrelere göre kontrol yap
-    for key, expected_value in param.items():
-        match = re.search(rf'^\s*{key}\s*=\s*(-?\d+)', content, re.MULTILINE)
-        if not match or int(match.group(1)) != int(expected_value):
-            return False, f"{key} için beklenen {expected_value}, mevcut: {match.group(1) if match else 'yok'}"
+        pam_check = subprocess.run([
+            "grep", "-Psi",
+            r"pam_pwquality\.so.*(minclass|[dulo]credit)",
+            "/etc/pam.d/common-password"
+        ], stdout=subprocess.PIPE, text=True)
+        if pam_check.stdout.strip():
+            return False, f"common-password içinde uygunsuz pam_pwquality argümanları bulundu:\n{pam_check.stdout}"
 
-    return True, "Tüm parola karmaşıklık parametreleri uyumlu."
+        return True, "Parola karmaşıklığı CIS gereksinimlerine uygun."
+    except Exception as e:
+        return False, f"Hata: {str(e)}"
 
 
 def apply_pw_complexity(username=None, param=None):
     """
-    CIS 5.3.3.2.3 - Ensure password complexity is configured
-    Param örnek: {"minclass": 3, "dcredit": -1, "ucredit": -1, "lcredit": -1, "ocredit": -1}
+    CIS 5.3.3.2.3 - Apply password complexity parameters
+    param örnek: {"minclass": 3, "dcredit": -1, "ucredit": -1, "lcredit": -1, "ocredit": -1}
     """
     try:
         param = param or {"minclass": 3, "dcredit": -1, "ucredit": -1, "lcredit": -1, "ocredit": -1}
 
-        is_ok, msg = check_pw_complexity(param)
-        if is_ok:
-            return True, f"Ayar zaten uyumlu. {msg}"
+        ok, msg = check_pw_complexity(param)
+        if ok:
+            return True, f"Zaten uyumlu: {msg}"
 
-        # 1. pwquality.conf içindeki eski satırları yorumla
-        run_command(["sed", "-ri", r's/^\s*(minclass|[dulo]credit)\s*=/# &/', PWQUALITY_CONF])
+        run_command(["sed", "-ri", r"/^\s*(minclass|[dulo]credit)\s*=/d", PWQUALITY_CONF])
 
-        # 2. pwquality.conf.d klasörü yoksa oluştur
-        if not os.path.isdir("/etc/security/pwquality.conf.d/"):
-            os.makedirs("/etc/security/pwquality.conf.d/")
+        os.makedirs("/etc/security/pwquality.conf.d/", exist_ok=True)
 
-        # 3. yeni parametreleri .d dosyasına yaz
-        lines = []
-        for key in ["minclass", "dcredit", "ucredit", "lcredit", "ocredit"]:
-            lines.append(f"{key} = {param.get(key, -1) if key != 'minclass' else param.get('minclass', 3)}")
         with open(PWQUALITY_CONF_D, "w") as f:
-            f.write("\n".join(lines) + "\n")
+            for key in ["minclass", "dcredit", "ucredit", "lcredit", "ocredit"]:
+                f.write(f"{key} = {param.get(key, -1)}\n")
 
-        # 4. PAM modüllerinden eski parametreleri temizle
-        cmd_find_pam = ["grep", "-Pl", r"\bpam_pwquality\.so\b.*(minclass|[dulo]credit)", f"{PAM_CONFIG_DIR}*"]
-        success, output = run_command(cmd_find_pam)
+        pam_conf = PAM_CONFIG_DIR
+        success, output = run_command([
+            "grep", "-Pl",
+            r"pam_pwquality\.so.*(minclass|[dulo]credit)",
+            f"{pam_conf}*"
+        ])
         if success and output:
-            files = output.splitlines()
-            for file in files:
-                run_command(["sed", "-ri", r's/\b(minclass|[dulo]credit)\s*=\s*-?\d+\b//g', file])
-                logger.info(f"[apply_pw_complexity] {file} içindeki eski parametreler temizlendi.")
+            for file in output.splitlines():
+                run_command(["sed", "-ri", r"s/\b(minclass|[dulo]credit)\s*=\s*-?\d+\b//g", file])
+                logger.info(f"[apply_pw_complexity] {file} içindeki eski argümanlar temizlendi.")
 
-        return True, f"Parola karmaşıklık parametreleri uygulandı: {param}"
+        return True, f"Parola karmaşıklık ayarları başarıyla uygulandı: {param}"
     except Exception as e:
         msg = f"Hata: {str(e)}"
         logger.error(f"[CIS 5.3.3.2.3][APPLY] {msg}")
-        return False, msg
+        return False, f"Hata: {msg}"
+
 
 
 

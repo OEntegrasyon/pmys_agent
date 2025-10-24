@@ -401,21 +401,16 @@ def check_cron_d_permissions():
     """
     try:
         success, output = run_command(
-            ["stat", "-Lc", "Access: (%a/%A) Uid: (%u/%U) Gid: (%g/%G)", "/etc/cron.d/"]
+            ["stat", "-Lc", "%a %u %g", "/etc/cron.d/"]
         )
         if not success:
             return False, f"/etc/cron.d kontrol edilemedi: {output}"
 
-        parts = output.split()
-        perms = parts[1].split("/")[0].strip("()")
-        uid = parts[3].split("/")[0].strip("()")
-        gid = parts[5].split("/")[0].strip("()")
-
+        perms, uid, gid = output.strip().split()
         if perms == "700" and uid == "0" and gid == "0":
-            return True, "/etc/cron.d izinleri doğru (700, root:root)."
+            return True, "cron.d izinleri UID 0 hesabına ait (uygun)."
         else:
-            return False, f"/etc/cron.d izinleri yanlış (perms={perms}, uid={uid}, gid={gid}), beklenen 700 ve root:root."
-
+            return False, f"/etc/cron.d izinleri hatalı: perms={perms}, uid={uid}, gid={gid}"
     except Exception as e:
         return False, f"/etc/cron.d kontrol hatası: {str(e)}"
 
@@ -430,7 +425,7 @@ def apply_cron_d_permissions(username=None, param=None):
             return True, check_msg
 
         run_command(["chown", "root:root", "/etc/cron.d/"])
-        run_command(["chmod", "og-rwx", "/etc/cron.d/"])
+        run_command(["chmod", "700", "/etc/cron.d/"])
 
         check_ok, check_msg = check_cron_d_permissions()
         if check_ok:
@@ -523,9 +518,10 @@ def apply_crontab_restriction(username=None, param=None):
 
         check_ok, check_msg = check_crontab_restriction()
         if check_ok:
+            logger.info(f"[CIS 2.4.1.8] crontab kısıtlamaları uygulandı: {check_msg}")
             return True, f"crontab kısıtlamaları uygulandı: {check_msg}"
         else:
-            logger.error(f"crontab kısıtlamaları düzeltilemedi: {check_msg}")
+            logger.error(f"[CIS 2.4.1.8] crontab kısıtlamaları düzeltilemedi: {check_msg}")
             return False, f"crontab kısıtlamaları düzeltilemedi: {check_msg}"
 
     except Exception as e:

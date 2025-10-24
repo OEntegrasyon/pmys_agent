@@ -92,7 +92,7 @@ def apply_sshd_config_permissions(username=None, param=None):
 def find_ssh_private_host_keys():
     """ /etc/ssh altındaki tüm private host key dosyalarını bul """
     key_files = []
-    for f in glob.glob("/etc/ssh/*"):
+    for f in glob.glob("/etc/ssh/**/*", recursive=True):
         try:
             # ssh-keygen ile gerçekten private key mi kontrol et
             ok, _ = run_command(["ssh-keygen", "-lf", f])
@@ -301,8 +301,19 @@ def check_sshd_access():
         if not success:
             return False, f"sshd -T çalıştırılamadı: {output}"
 
-        matches = re.findall(r'^(allowusers|allowgroups|denyusers|denygroups)\s+.+$', output, re.MULTILINE)
+        matches = re.findall(
+            r'^(allowusers|allowgroups|denyusers|denygroups)\s+.+$',
+            output, re.MULTILINE
+        )
+
         if not matches:
+            # config dosyalarında var mı?
+            for path in get_all_sshd_config_files():
+                with open(path, "r") as f:
+                    text = f.read()
+                    if re.search(r'^\s*(AllowUsers|AllowGroups|DenyUsers|DenyGroups)\s+', text, re.MULTILINE):
+                        return True, f"Ayar {path} içinde tanımlı."
+
             return False, "Herhangi bir AllowUsers/AllowGroups/DenyUsers/DenyGroups ayarı bulunamadı."
 
         return True, f"Erişim kontrolü ayarlı: {', '.join(set(matches))}"
@@ -329,10 +340,13 @@ def apply_sshd_access(username=None, param=None):
         if not non_empty:
             return check_sshd_access()
 
-        if not os.path.exists(SSHD_CONFIG):
-            return False, f"{SSHD_CONFIG} bulunamadı."
+        sshd_files = get_all_sshd_config_files()
+        if not sshd_files:
+            return False, "Hiçbir SSH konfigürasyon dosyası bulunamadı."
 
-        with open(SSHD_CONFIG, "r") as f:
+        main_file = sshd_files[0]
+
+        with open(main_file, "r") as f:
             lines = f.readlines()
 
         new_lines = []
@@ -343,7 +357,7 @@ def apply_sshd_access(username=None, param=None):
         for key, value in non_empty.items():
             new_lines.append(f"{key} {value}\n")
 
-        with open(SSHD_CONFIG, "w") as f:
+        with open(main_file, "w") as f:
             f.writelines(new_lines)
 
         run_command(["systemctl", "reload", "sshd"])
@@ -362,20 +376,19 @@ BANNER_FILE = "/etc/issue.net"
 
 def check_sshd_banner():
     """
-    CIS 5.1.5 - SSHD Banner kontrolü
+    CIS 5.1.5 - SSHD Banner kontrolü (Banner dosyası, içerik ve uygunsuz token denetimi)
     """
     try:
         success, output = run_command(["sshd", "-T"])
         if not success:
             return False, f"sshd -T çalıştırılamadı: {output}"
 
-        # output.stdout yerine direkt output kullan
-        banner_line = [line for line in output.splitlines() if line.strip().lower().startswith("banner")]
-
+        # Banner parametresini bul
+        banner_line = [line for line in output.splitlines() if line.strip().lower().startswith("banner ")]
         if not banner_line:
             return False, "Banner ayarı bulunamadı."
 
-        key, path = banner_line[0].split(maxsplit=1)
+        _, path = banner_line[0].split(maxsplit=1)
         if not os.path.exists(path):
             return False, f"Banner dosyası mevcut değil: {path}"
 
@@ -385,10 +398,25 @@ def check_sshd_banner():
         if not content:
             return False, "Banner dosyası boş."
 
+        # Uygunsuz karakter dizilerini kontrol et
         forbidden_tokens = ["\\m", "\\r", "\\s", "\\v"]
         for token in forbidden_tokens:
             if token in content:
                 return False, f"Banner dosyası uygunsuz içerik içeriyor: {token}"
+
+        # OS kimliği (örnek: "debian", "ubuntu", "pardus") bulunmamalı
+        os_id = None
+        try:
+            with open("/etc/os-release", "r") as osr:
+                for line in osr:
+                    if line.startswith("ID="):
+                        os_id = line.split("=", 1)[1].replace('"', '').strip().lower()
+                        break
+        except Exception:
+            pass
+
+        if os_id and re.search(rf"\b{re.escape(os_id)}\b", content, re.IGNORECASE):
+            return False, f"Banner dosyası işletim sistemi kimliği içeriyor: {os_id}"
 
         return True, f"Banner ayarı doğru: {path}"
 
@@ -405,46 +433,53 @@ def apply_sshd_banner(username=None, param=None):
         }
     """
     try:
-
-        check_ok, check_msg = check_sshd_banner()
-        if check_ok:
-            return True, f"Banner zaten doğru ayarlanmış: {check_msg}"
-
-        message = param.get("BannerMessage", "").strip()
+        message = param.get("BannerMessage", "").strip() if param else ""
         if not message:
             return False, "Banner mesajı parametre olarak verilmedi."
 
         with open(BANNER_FILE, "w", encoding="utf-8") as f:
             f.write(message + "\n")
 
-        updated_lines = []
-        banner_set = False
+        sshd_files = get_all_sshd_config_files()
+        if not sshd_files:
+            return False, "SSH yapılandırma dosyası bulunamadı."
 
-        if os.path.exists(SSHD_CONFIG):
-            with open(SSHD_CONFIG, "r", encoding="utf-8") as f:
-                for line in f:
-                    if line.strip().lower().startswith("banner "):
-                        updated_lines.append(f"Banner {BANNER_FILE}\n")
-                        banner_set = True
-                    else:
-                        updated_lines.append(line)
+        main_file = sshd_files[0]  # genelde /etc/ssh/sshd_config
 
-        if not banner_set:
-            updated_lines.insert(0, f"Banner {BANNER_FILE}\n")
+        # Banner satırını düzenle (ilk Include/Match'ten önce olacak şekilde)
+        with open(main_file, "r", encoding="utf-8") as f:
+            lines = f.readlines()
 
-        with open(SSHD_CONFIG, "w", encoding="utf-8") as f:
-            f.writelines(updated_lines)
+        new_lines = []
+        banner_inserted = False
+        for line in lines:
+            stripped = line.strip().lower()
+            if not banner_inserted and (stripped.startswith("include") or stripped.startswith("match")):
+                new_lines.append(f"Banner {BANNER_FILE}\n")
+                banner_inserted = True
+            if stripped.startswith("banner "):
+                # varsa eski satırı değiştir
+                if not banner_inserted:
+                    new_lines.append(f"Banner {BANNER_FILE}\n")
+                    banner_inserted = True
+            else:
+                new_lines.append(line)
 
-        success, output = run_command(["systemctl", "restart", "sshd"])
+        if not banner_inserted:
+            new_lines.insert(0, f"Banner {BANNER_FILE}\n")
 
+        with open(main_file, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+
+        success, output = run_command(["systemctl", "reload", "sshd"])
         if not success:
-            return False, f"systemctl restart çalıştırılamadı: {output}"
-            
+            return False, f"sshd reload başarısız: {output}"
+
         return check_sshd_banner()
 
     except Exception as ex:
         msg = f"Hata: {str(ex)}"
-        logger.error(f"Banner ayarlanırken hata: {msg}")
+        logger.error(f"[CIS 5.1.5][APPLY] {msg}")
         return False, f"Banner ayarlanırken hata: {msg}"
 
 
@@ -505,41 +540,58 @@ def check_sshd_ciphers(username=None, param=None):
 def apply_sshd_ciphers(username=None, param=None):
     """
     CIS 5.1.6 - Apply sshd Ciphers configuration
+    (Tüm sshd_config ve Include dosyalarında uygular)
     """
     try:
         new_ciphers = param.get("ciphers") if param else DEFAULT_CIPHERS
+        config_files = get_all_sshd_config_files()
 
-        backup_file = f"{SSHD_CONFIG}.bak"
-        shutil.copy2(SSHD_CONFIG, backup_file)
+        if not config_files:
+            return False, "Hiç sshd config dosyası bulunamadı."
 
-        with open(SSHD_CONFIG, "r") as f:
-            lines = f.readlines()
+        applied = False
 
-        updated_lines = []
-        ciphers_set = False
-        for line in lines:
-            if line.strip().startswith("Ciphers"):
+        for conf_file in config_files:
+            backup_file = f"{conf_file}.bak"
+            shutil.copy2(conf_file, backup_file)
+
+            with open(conf_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            updated_lines = []
+            ciphers_set = False
+
+            for line in lines:
+                if line.strip().lower().startswith("ciphers "):
+                    updated_lines.append(f"Ciphers {new_ciphers}\n")
+                    ciphers_set = True
+                else:
+                    updated_lines.append(line)
+
+            # Eğer hiçbir yerde yoksa en sona ekle
+            if not ciphers_set:
+                updated_lines.append(f"\n# SSH Ciphers configuration per CIS 5.1.6\n")
                 updated_lines.append(f"Ciphers {new_ciphers}\n")
-                ciphers_set = True
-            else:
-                updated_lines.append(line)
 
-        if not ciphers_set:
-            updated_lines.append(f"\nCiphers {new_ciphers}\n")
+            with open(conf_file, "w", encoding="utf-8") as f:
+                f.writelines(updated_lines)
 
-        with open(SSHD_CONFIG, "w") as f:
-            f.writelines(updated_lines)
+            applied = True
 
-        # Config test (syntax check)
+        if not applied:
+            return False, "Hiçbir sshd_config dosyasına yazılamadı."
+
+        # Config syntax kontrolü
         success, output = run_command(["sshd", "-t"])
         if not success:
-            shutil.copy2(backup_file, SSHD_CONFIG)
+            # Hatalıysa geri al
+            for conf_file in config_files:
+                shutil.copy2(f"{conf_file}.bak", conf_file)
             return False, f"Config test hatası: {output}"
 
         # Servisi yeniden başlat
         success, output = run_command(["systemctl", "restart", "sshd"])
         if not success:
-            shutil.copy2(backup_file, SSHD_CONFIG)
             return False, f"sshd restart başarısız: {output}"
 
         # Doğrulama
@@ -577,174 +629,259 @@ def reload_sshd():
 
 def check_ssh_client_alive(param):
     """
-    CIS 5.1.7 kontrolü:
-    ClientAliveInterval ve ClientAliveCountMax değerlerini doğrula
+    CIS 5.1.7 - Ensure sshd ClientAliveInterval and ClientAliveCountMax are configured
     """
-    desired_interval = param.get("ClientAliveInterval")
-    desired_count = param.get("ClientAliveCountMax")
+    try:
+        desired_interval = param.get("ClientAliveInterval")
+        desired_count = param.get("ClientAliveCountMax")
 
-    success, output = run_command(["sshd", "-T"])
-    if not success:
-        return False, f"sshd -T çalıştırılamadı: {output}"
+        all_configs = ""
+        for cfg_file in get_all_sshd_config_files():
+            try:
+                with open(cfg_file, "r", encoding="utf-8") as f:
+                    all_configs += f.read() + "\n"
+            except Exception:
+                continue
 
-    current = {}
-    for line in output.splitlines():
-        if line.startswith("clientaliveinterval"):
-            current["ClientAliveInterval"] = int(line.split()[1])
-        elif line.startswith("clientalivecountmax"):
-            current["ClientAliveCountMax"] = int(line.split()[1])
+        success, output = run_command(["sshd", "-T"])
+        if not success:
+            return False, f"sshd -T çalıştırılamadı: {output}"
 
-    # CIS gereği > 0 olmalı
-    if current.get("ClientAliveInterval", 0) <= 0:
-        return False, f"ClientAliveInterval {current.get('ClientAliveInterval')} (0 veya daha az olmamalı)"
-    if current.get("ClientAliveCountMax", 0) <= 0:
-        return False, f"ClientAliveCountMax {current.get('ClientAliveCountMax')} (0 olmamalı)"
+        current = {}
+        for line in output.splitlines():
+            key_val = line.strip().split(maxsplit=1)
+            if len(key_val) != 2:
+                continue
+            key, val = key_val
+            if key == "clientaliveinterval":
+                current["ClientAliveInterval"] = int(val)
+            elif key == "clientalivecountmax":
+                current["ClientAliveCountMax"] = int(val)
 
-    # Parametrelerle uyuşuyor mu?
-    if desired_interval is not None and current["ClientAliveInterval"] != desired_interval:
-        return False, f"ClientAliveInterval beklenen {desired_interval}, mevcut {current['ClientAliveInterval']}"
-    if desired_count is not None and current["ClientAliveCountMax"] != desired_count:
-        return False, f"ClientAliveCountMax beklenen {desired_count}, mevcut {current['ClientAliveCountMax']}"
+        if current.get("ClientAliveInterval", 0) <= 0:
+            return False, f"ClientAliveInterval {current.get('ClientAliveInterval')} (0 veya daha az olmamalı)"
+        if current.get("ClientAliveCountMax", 0) <= 0:
+            return False, f"ClientAliveCountMax {current.get('ClientAliveCountMax')} (0 olmamalı)"
 
-    return True, "ClientAlive ayarları doğru yapılandırılmış."
+        if desired_interval and current["ClientAliveInterval"] != desired_interval:
+            return False, f"ClientAliveInterval beklenen {desired_interval}, mevcut {current['ClientAliveInterval']}"
+        if desired_count and current["ClientAliveCountMax"] != desired_count:
+            return False, f"ClientAliveCountMax beklenen {desired_count}, mevcut {current['ClientAliveCountMax']}"
 
+        return True, "ClientAliveInterval ve ClientAliveCountMax doğru yapılandırılmış."
+
+    except Exception as ex:
+        return False, f"Hata: {str(ex)}"
 
 
 def apply_ssh_client_alive(username=None, param=None):
     """
-    CIS 5.1.7 düzeltme:
-    ClientAliveInterval ve ClientAliveCountMax değerlerini ayarla
+    CIS 5.1.7 düzeltme: - Apply ClientAliveInterval and ClientAliveCountMax
+    Gereksinim:
+        ClientAliveInterval 1–300 arasında olmalı (önerilen: 15–60)
+        ClientAliveCountMax 3 veya daha az olmalı
+    İşlev:
+        - Gelen parametreleri uygular (ör: {"ClientAliveInterval": 60, "ClientAliveCountMax": 3})
     """
+
     try:
-        status, message = check_ssh_client_alive(param)
-        if status:
-            return True, f"Değişiklik gerekmiyor: {message}"
+        if not param or not all(k in param for k in ["ClientAliveInterval", "ClientAliveCountMax"]):
+            return False, "Eksik parametre: 'ClientAliveInterval' ve 'ClientAliveCountMax' belirtilmeli."
 
-        interval = param.get("ClientAliveInterval")
-        count = param.get("ClientAliveCountMax")
+        interval = int(param.get("ClientAliveInterval", 60))
+        count = int(param.get("ClientAliveCountMax", 3))
 
-        if interval is None and count is None:
-            return False, "Parametreler boş geldi."
+        if not (1 <= interval <= 300):
+            return False, f"ClientAliveInterval geçersiz: {interval}. 1-300 aralığında olmalı."
+        if count > 3:
+            return False, f"ClientAliveCountMax çok yüksek: {count}. CIS en fazla 3 önerir."
 
-        config = read_sshd_config()
+        ok, msg = check_ssh_client_alive(param)
+        if ok and "uygun" in msg.lower():
+            return True, f"Zaten uygun: {msg} (Parametreler: {param})"
 
-        # Match blokları varsa, onların üstüne ekle
-        match_pos = re.search(r"^\s*Match\b", config, re.MULTILINE)
-        insert_point = match_pos.start() if match_pos else len(config)
+        with open(SSHD_CONFIG, "r", encoding="utf-8") as f:
+            lines = f.readlines()
 
-        new_lines = []
-        if interval is not None:
-            if re.search(r"^\s*ClientAliveInterval", config, re.MULTILINE):
-                config = re.sub(r"^\s*ClientAliveInterval.*",
-                                f"ClientAliveInterval {interval}",
-                                config, flags=re.MULTILINE)
-            else:
-                new_lines.append(f"ClientAliveInterval {interval}")
-        if count is not None:
-            if re.search(r"^\s*ClientAliveCountMax", config, re.MULTILINE):
-                config = re.sub(r"^\s*ClientAliveCountMax.*",
-                                f"ClientAliveCountMax {count}",
-                                config, flags=re.MULTILINE)
-            else:
-                new_lines.append(f"ClientAliveCountMax {count}")
+        insert_index = 0
+        for i, line in enumerate(lines):
+            if re.match(r'^\s*(Include|Match)\b', line, re.IGNORECASE):
+                insert_index = i
+                break
 
-        if new_lines:
-            config = config[:insert_point] + "\n".join(new_lines) + "\n" + config[insert_point:]
+        pattern_interval = re.compile(r'^\s*#?\s*ClientAliveInterval\b', re.IGNORECASE)
+        pattern_count = re.compile(r'^\s*#?\s*ClientAliveCountMax\b', re.IGNORECASE)
 
-        write_sshd_config(config)
-        return reload_sshd()
-    except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"[CIS 5.1.7][APPLY] {msg}")
-        return False, f"SSH ClientAlive ayar düzeltme hatası: {msg}"
+        updated = False
+        for i, line in enumerate(lines):
+            if pattern_interval.match(line):
+                lines[i] = f"ClientAliveInterval {interval}\n"
+                updated = True
+            elif pattern_count.match(line):
+                lines[i] = f"ClientAliveCountMax {count}\n"
+                updated = True
+
+        if not any(pattern_interval.match(l) for l in lines):
+            lines.insert(insert_index, f"ClientAliveInterval {interval}\n")
+            insert_index += 1
+        if not any(pattern_count.match(l) for l in lines):
+            lines.insert(insert_index, f"ClientAliveCountMax {count}\n")
+
+        backup = f"{SSHD_CONFIG}.bak"
+        if not os.path.exists(backup):
+            run_command(["cp", SSHD_CONFIG, backup])
+
+        with open(SSHD_CONFIG, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+        ok_test, out_test = run_command(["sshd", "-t"])
+        if not ok_test:
+            run_command(["cp", backup, SSHD_CONFIG])
+            return False, f"sshd -t doğrulaması başarısız: {out_test}"
+
+        ok_reload, out_reload = run_command(["systemctl", "reload", "sshd"])
+        if not ok_reload:
+            return False, f"SSH servisi reload başarısız: {out_reload}"
+
+        ok_final, msg_final = check_ssh_client_alive(param)
+        if ok_final:
+            return True, (
+                f"ClientAliveInterval={interval}, ClientAliveCountMax={count} başarıyla uygulandı. "
+                f"({msg_final})"
+            )
+        else:
+            return False, f"Değişiklik yapıldı ancak doğrulama başarısız: {msg_final}"
+
+    except Exception as ex:
+        msg = f"Hata: {str(ex)}"
+        logger.error(f"[CIS 5.1.10-5.1.11][APPLY] {msg}")
+        return False, f"SSH ClientAlive ayar hatası: {msg}"
 
 
 
 def check_sshd_disableforwarding():
     """
-    CIS 5.1.8 - SSH DisableForwarding kontrol fonksiyonu.
+    CIS 5.1.8 - Ensure sshd DisableForwarding is enabled.
     Beklenen: DisableForwarding yes
     """
-    ok, output = run_command(["sshd", "-T"])
-    if not ok:
-        return False, f"sshd -T çalıştırılamadı: {output}"
+    try:
+        ok, output = run_command(["sshd", "-T"])
+        if not ok:
+            return False, f"sshd -T çalıştırılamadı: {output}"
 
-    for line in output.splitlines():
-        if line.lower().startswith("disableforwarding"):
-            value = line.split()[1].lower()
-            if value == "yes":
-                return True, "DisableForwarding zaten 'yes' olarak ayarlanmış."
-            else:
-                return False, f"DisableForwarding mevcut değer: {value}"
+        for line in output.splitlines():
+            if line.lower().startswith("disableforwarding"):
+                value = line.split()[1].lower()
+                if value == "yes":
+                    return True, "DisableForwarding doğru yapılandırılmış (yes)."
+                else:
+                    return False, f"DisableForwarding değeri yanlış: {value}"
 
-    return False, "DisableForwarding parametresi bulunamadı, varsayılan 'no' olabilir."
+        return False, "DisableForwarding parametresi bulunamadı (varsayılan: no olabilir)."
+
+    except Exception as e:
+        return False, f"Hata (check_sshd_disableforwarding): {e}"
 
 
 def apply_sshd_disableforwarding(username=None, param=None):
     """
-    CIS 5.1.8 - SSH DisableForwarding uygulama fonksiyonu.
+    CIS 5.1.8 - DisableForwarding 'yes' olarak ayarlanır.
+    Include ve Match öncesine ekler, yorumlu satırları aktif hale getirir.
     """
-    ok, msg = check_sshd_disableforwarding()
-    if ok:
-        return True, f"Her şey zaten doğru: {msg}"
-
     try:
-        with open(SSHD_CONFIG, "r") as f:
-            lines = f.readlines()
-
-        new_lines = []
-        found = False
-        for line in lines:
-            if line.strip().lower().startswith("disableforwarding"):
-                new_lines.append("DisableForwarding yes\n")
-                found = True
-            else:
-                new_lines.append(line)
-
-        if not found:
-            insert_index = 0
-            for i, line in enumerate(new_lines):
-                if line.strip().lower().startswith(("include", "match")):
-                    insert_index = i
-                    break
-            new_lines.insert(insert_index, "DisableForwarding yes\n")
-        
-        with open(SSHD_CONFIG, "w") as f:
-            f.writelines(new_lines)
-
-        run_command(["systemctl", "reload", "sshd"])
-
         ok, msg = check_sshd_disableforwarding()
         if ok:
-            return True, "DisableForwarding parametresi başarıyla 'yes' olarak ayarlandı."
+            return True, f"Her şey zaten doğru: {msg}"
+
+        with open(SSHD_CONFIG, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        pattern = re.compile(r'^\s*#?\s*DisableForwarding\b', re.IGNORECASE)
+        insert_index = 0
+        for i, line in enumerate(lines):
+            if re.match(r'^\s*(Include|Match)\b', line, re.IGNORECASE):
+                insert_index = i
+                break
+
+        found = False
+        for i, line in enumerate(lines):
+            if pattern.match(line):
+                lines[i] = "DisableForwarding yes\n"
+                found = True
+                break
+
+        if not found:
+            lines.insert(insert_index, "DisableForwarding yes\n")
+
+        # Değişiklikleri kaydet
+        with open(SSHD_CONFIG, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+        ok, out = run_command(["sshd", "-t"])
+        if not ok:
+            return False, f"sshd yapılandırma testi başarısız: {out}"
+
+        ok, out = run_command(["systemctl", "reload", "sshd"])
+        if not ok:
+            return False, f"sshd reload başarısız: {out}"
+
+        ok_final, msg_final = check_sshd_disableforwarding()
+        if ok_final:
+            return True, "DisableForwarding başarıyla 'yes' olarak ayarlandı."
         else:
-            return False, f"Düzeltme uygulandı ama sorun devam ediyor: {msg}"
+            return False, f"Değişiklik yapıldı ancak doğrulama başarısız: {msg_final}"
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
-        logger.error(f"[CIS 5.1.8][APPLY] {msg}")   
-        return False, f"DisableForwarding parametresi düzenlenemedi: {msg}"
+        logger.error(f"[CIS 5.1.8][APPLY] {msg}")
+        return False, f"DisableForwarding düzenlenemedi: {msg}"
 
 
 
 def check_sshd_gssapiauthentication():
     """
-    CIS 5.1.9 - Kontrol fonksiyonu
-    SSHD GSSAPIAuthentication ayarının 'no' olduğunu doğrular.
+    CIS 5.1.9 - GSSAPIAuthentication kontrolü
+    Hem global ayarı hem de Match bloklarının override edip etmediğini denetler.
     """
+    # 1️⃣ Global config kontrolü
     ok, output = run_command(["sshd", "-T"])
     if not ok:
         return False, f"sshd -T çalıştırılamadı: {output}"
 
+    global_val = None
     for line in output.splitlines():
         if line.strip().startswith("gssapiauthentication"):
-            value = line.strip().split()[-1].lower()
-            if value == "no":
-                return True, "GSSAPIAuthentication doğru şekilde 'no' olarak ayarlanmış."
-            else:
-                return False, f"GSSAPIAuthentication hatalı: {value}"
+            global_val = line.strip().split()[-1].lower()
+            break
 
-    return False, "GSSAPIAuthentication parametresi bulunamadı."
+    if global_val != "no":
+        return False, f"GSSAPIAuthentication globalde hatalı: {global_val or 'tanımsız'}"
+
+    match_found = False
+    for cfg in get_all_sshd_config_files():
+        try:
+            with open(cfg, "r") as f:
+                for line in f:
+                    if line.strip().lower().startswith("match "):
+                        match_found = True
+                        break
+        except Exception:
+            continue
+
+    if match_found:
+        test_users = ["root", "testuser", "admin", "pardus", "ubuntu", "debian", "guest", "user", "sshuser", "backup"]    # burası şimdilik sabit. ip, grup vs eklenebilir
+        for user in test_users:
+            ok, match_out = run_command(["sshd", "-T", "-C", f"user={user}"])
+            if not ok:
+                continue
+            for line in match_out.splitlines():
+                if line.strip().startswith("gssapiauthentication"):
+                    val = line.strip().split()[-1].lower()
+                    if val != "no":
+                        return False, f"Match bloğu kullanıcı '{user}' için GSSAPIAuthentication={val}"
+
+    return True, "Tüm kullanıcı ve match blokları için GSSAPIAuthentication 'no' olarak ayarlanmış."
+
 
 
 def apply_sshd_gssapiauthentication(username=None, param=None):
@@ -756,35 +893,54 @@ def apply_sshd_gssapiauthentication(username=None, param=None):
     if ok:
         return True, msg
 
-    backup_file = SSHD_CONFIG + ".bak"
-
     try:
-        # yedek al
-        shutil.copy2(SSHD_CONFIG, backup_file)
+        config_files = get_all_sshd_config_files()
+        if not config_files:
+            return False, "Herhangi bir sshd config dosyası bulunamadı."
 
-        lines = []
-        inserted = False
-        with open(SSHD_CONFIG, "r") as f:
-            for line in f:
-                # Eğer Include veya Match satırına denk gelmeden önce eklenmemişse buraya ekle
-                if not inserted and (line.strip().startswith("Include") or line.strip().startswith("Match")):
-                    lines.append("GSSAPIAuthentication no\n")
+        updated = False
+
+        for cfg in config_files:
+            if not os.path.exists(cfg):
+                continue
+
+            with open(cfg, "r") as f:
+                lines = f.readlines()
+
+            new_lines = []
+            found = False
+            inserted = False
+
+            for line in lines:
+                # Var olan satırı değiştir
+                if line.strip().lower().startswith("gssapiauthentication"):
+                    new_lines.append("GSSAPIAuthentication no\n")
+                    found = True
+                    continue
+
+                # Eğer Include veya Match satırından önce ekleme yapılmamışsa
+                if not found and not inserted and line.strip().lower().startswith(("include", "match")):
+                    new_lines.append("GSSAPIAuthentication no\n")
                     inserted = True
-                lines.append(line)
 
-        # Eğer hiç eklenmediyse en sona ekle
-        if not inserted:
-            lines.append("GSSAPIAuthentication no\n")
+                new_lines.append(line)
 
-        with open(SSHD_CONFIG, "w") as f:
-            f.writelines(lines)
+            # Hiç bulunmadı ve eklenmediyse en sona ekle
+            if not found and not inserted:
+                new_lines.append("GSSAPIAuthentication no\n")
 
-        # sshd yapılandırmasını yeniden yüklemeden önce test et
-        ok, output = run_command(["sshd", "-t"])
+            with open(cfg, "w") as f:
+                f.writelines(new_lines)
+
+            updated = True
+
+        if not updated:
+            return False, "Herhangi bir yapılandırma dosyası düzenlenemedi."
+
+        # Değişiklik sonrası yapılandırmayı test et
+        ok, test_output = run_command(["sshd", "-t"])
         if not ok:
-            # Hatalı config → geri dön
-            shutil.copy2(backup_file, SSHD_CONFIG)
-            return False, f"Config test başarısız: {output}. Yedek geri yüklendi."
+            return False, f"Config test başarısız: {test_output}"
 
         run_command(["systemctl", "reload", "sshd"])
 
@@ -801,100 +957,85 @@ def apply_sshd_gssapiauthentication(username=None, param=None):
 
 
 
-def check_sshd_hostbasedauthentication():
+def check_sshd_hostbasedauthentication(test_user: str = None):
     """
-    CIS 5.1.10 - Check that sshd HostbasedAuthentication is 'no'.
-    Uses `sshd -T` output to verify. Returns (bool, message).
-    Note: If Match blocks are used and you need to test for a specific
-    connection context, extend to call `sshd -T -C ...`.
+    CIS 5.1.10 - Ensure HostbasedAuthentication is disabled.
+    - Kontrol hem genel hem de Match blokları için yapılır.
     """
     ok, output = run_command(["sshd", "-T"])
     if not ok:
         return False, f"sshd -T çalıştırılamadı: {output}"
 
-    for line in output.splitlines():
-        line = line.strip()
-        if line.lower().startswith("hostbasedauthentication"):
-            parts = line.split()
-            if len(parts) >= 2 and parts[-1].lower() == "no":
-                return True, "HostbasedAuthentication doğru: no"
-            else:
-                value = parts[-1] if len(parts) >= 2 else "(belirsiz)"
-                return False, f"HostbasedAuthentication yanlış: {value}"
-    return False, "HostbasedAuthentication ayarı bulunamadı (sshd -T çıktısında yok)."
+    def extract_value(out):
+        for line in out.splitlines():
+            if line.strip().lower().startswith("hostbasedauthentication"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    return parts[-1].lower()
+        return None
 
+    value_global = extract_value(output)
+    if value_global != "no":
+        return False, f"HostbasedAuthentication yanlış: {value_global or 'bulunamadı'}"
+
+    # Eğer Match blokları varsa, -C user ile tekrar test et
+    if test_user:
+        ok_c, out_c = run_command(["sshd", "-T", "-C", f"user={test_user}"])
+        if ok_c:
+            value_match = extract_value(out_c)
+            if value_match != "no":
+                return False, f"Match bloğunda HostbasedAuthentication override edilmiş: {value_match}"
+        else:
+            return False, f"sshd -T -C user={test_user} çalıştırılamadı: {out_c}"
+
+    return True, "HostbasedAuthentication doğru: no (Match blokları dahil)"
 
 def apply_sshd_hostbasedauthentication(username=None, param=None):
     """
     CIS 5.1.10 - Ensure HostbasedAuthentication is disabled.
-    - Değilse /etc/ssh/sshd_config yedeklenir ve:
-        * Eğer mevcut HostbasedAuthentication satırı varsa ve Include/Match'den önce değilse,
-          dosyanın Include/Match satırlarının hemen önüne "HostbasedAuthentication no" eklenir.
-        * Eğer mevcut HostbasedAuthentication satırı varsa ve zaten Include/Match'den önceyse,
-          o satırın değeri "no" olacak şekilde güncellenir.
-        * Eğer hiç yoksa Include/Match satırlarının önüne eklenir (veya dosya boşsa en üst).
+    - Include ve Match öncesine 'HostbasedAuthentication no' ekler.
+    - get_all_sshd_config_files() kullanır.
     """
+    all_files = get_all_sshd_config_files()
+    if not all_files:
+        all_files = ["/etc/ssh/sshd_config"]
 
-
-    backup = SSHD_CONFIG + ".cisbak"
-
+    main_cfg = all_files[0]
     ok, msg = check_sshd_hostbasedauthentication()
     if ok:
         return True, msg
 
-    if not os.path.exists(SSHD_CONFIG):
-        return False, f"{SSHD_CONFIG} bulunamadı."
-
     try:
-        shutil.copy2(SSHD_CONFIG, backup)
-
-        with open(SSHD_CONFIG, "r", encoding="utf-8") as f:
+        with open(main_cfg, "r", encoding="utf-8") as f:
             lines = f.readlines()
 
         insert_index = None
-        for idx, raw in enumerate(lines):
-            s = raw.strip()
-            if not s:
-                continue
-            s_low = s.lower()
-            if s_low.startswith("include ") or s_low.startswith("match "):
+        for idx, line in enumerate(lines):
+            if re.match(r'^\s*(Include|Match)\b', line, re.IGNORECASE):
                 insert_index = idx
                 break
         if insert_index is None:
             insert_index = 0
 
-        # dosyada ilk HostbasedAuthentication var mı ve indeksi nedir?
-        first_hba_index = None
-        pattern = re.compile(r'^\s*hostbasedauthentication\b', re.IGNORECASE)
-        for idx, raw in enumerate(lines):
-            s = raw.strip()
-            if not s or s.startswith("#"):
-                continue
-            if pattern.match(s):
-                first_hba_index = idx
-                break
+        pattern = re.compile(r'^\s*HostbasedAuthentication\b', re.IGNORECASE)
+        hba_index = next((i for i, l in enumerate(lines) if pattern.match(l)), None)
 
-        new_lines = list(lines)
-
-        if first_hba_index is None:
-            new_lines.insert(insert_index, "HostbasedAuthentication no\n")
+        if hba_index is None:
+            lines.insert(insert_index, "HostbasedAuthentication no\n")
         else:
-            # var => eğer zaten insert_index'den önceyse onu güncelle; değilse yeni bir satır ekle insert_index'e
-            if first_hba_index <= insert_index:
-                # korumak için orijinal leading whitespace al
-                leading = re.match(r'^(\s*)', lines[first_hba_index]).group(1)
-                new_lines[first_hba_index] = f"{leading}HostbasedAuthentication no\n"
-            else:
-                # mevcuttan sonra; Insert kullanarak öncelikli hale getir
-                new_lines.insert(insert_index, "HostbasedAuthentication no\n")
+            lines[hba_index] = re.sub(
+                r'^\s*HostbasedAuthentication\s+\S+',
+                "HostbasedAuthentication no",
+                lines[hba_index],
+                flags=re.IGNORECASE
+            )
 
-        with open(cfg, "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
+        with open(main_cfg, "w", encoding="utf-8") as f:
+            f.writelines(lines)
 
         ok_test, out_test = run_command(["sshd", "-t"])
         if not ok_test:
-            shutil.copy2(backup, cfg)
-            return False, f"sshd -t başarısız: {out_test}. Orijinal dosya geri yüklendi."
+            return False, f"sshd -t başarısız: {out_test}"
 
         run_command(["systemctl", "reload", "sshd"])
 
@@ -902,79 +1043,114 @@ def apply_sshd_hostbasedauthentication(username=None, param=None):
         if ok_final:
             return True, "HostbasedAuthentication başarıyla 'no' yapıldı."
         else:
-            return False, f"Değişiklik uygulandı ama doğrulama başarısız: {msg_final}"
+            return False, f"Değişiklik yapıldı ama doğrulama başarısız: {msg_final}"
 
     except Exception as e:
-        try:
-            if os.path.exists(backup):
-                shutil.copy2(backup, cfg)
-        except Exception:
-            pass
-        msg = f"Hata: {str(e)}"
-        logger.error(f"Hata: {msg}")
-        return False, f"Uygulama sırasında hata: {msg}"
+        return False, f"Hata: {e}"
 
 
 
-def check_sshd_ignorerhosts():
+
+def check_sshd_ignorerhosts(test_user: str = None):
     """
-    CIS 5.1.11 - SSH IgnoreRhosts kontrol fonksiyonu.
-    Beklenen: IgnoreRhosts yes
+    CIS 5.1.11 - Ensure IgnoreRhosts is enabled.
+    - Kontrol hem genel hem de Match blokları için yapılır.
     """
     ok, output = run_command(["sshd", "-T"])
     if not ok:
         return False, f"sshd -T çalıştırılamadı: {output}"
 
-    for line in output.splitlines():
-        if line.lower().startswith("ignorerhosts"):
-            value = line.split()[1].lower()
-            if value == "yes":
-                return True, "IgnoreRhosts zaten 'yes' olarak ayarlanmış."
-            else:
-                return False, f"IgnoreRhosts mevcut değer: {value}"
+    def extract_value(out):
+        for line in out.splitlines():
+            if line.strip().lower().startswith("ignorerhosts"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    return parts[-1].lower()
+        return None
 
-    return False, "IgnoreRhosts parametresi bulunamadı, varsayılan 'no' olabilir."
+    value_global = extract_value(output)
+    if value_global != "yes":
+        return False, f"IgnoreRhosts yanlış: {value_global or 'bulunamadı'}"
+
+    # Match bloğu kontrolü (opsiyonel)
+    if test_user:
+        ok_c, out_c = run_command(["sshd", "-T", "-C", f"user={test_user}"])
+        if ok_c:
+            value_match = extract_value(out_c)
+            if value_match != "yes":
+                return False, f"Match bloğunda IgnoreRhosts override edilmiş: {value_match}"
+        else:
+            return False, f"sshd -T -C user={test_user} çalıştırılamadı: {out_c}"
+
+    return True, "IgnoreRhosts doğru: yes (Match blokları dahil)"
 
 
 def apply_sshd_ignorerhosts(username=None, param=None):
     """
-    CIS 5.1.11 - SSH IgnoreRhosts uygulama fonksiyonu.
-    Önce check çalıştırılır, gerekiyorsa düzeltme yapılır.
+    CIS 5.1.11 - Ensure IgnoreRhosts is enabled.
+    - /etc/ssh/sshd_config ve Include dosyaları üzerinde çalışır.
+    - 'IgnoreRhosts yes' satırını yorumlardan temizleyip uygun yere ekler.
     """
-    ok, msg = check_sshd_ignorerhosts()
-    if ok:
-        return True, f"Her şey zaten doğru: {msg}"
-
-    
     try:
-        with open(SSHD_CONFIG, "r") as f:
-            lines = f.readlines()
+        all_files = get_all_sshd_config_files()
+        if not all_files:
+            all_files = ["/etc/ssh/sshd_config"]
 
-        new_lines = []
-        found = False
-        for line in lines:
-            if line.strip().lower().startswith("ignorerhosts"):
-                new_lines.append("IgnoreRhosts yes\n")
-                found = True
-            else:
-                new_lines.append(line)
-        if not found:
+        main_cfg = all_files[0]
 
-            insert_index = 0
-            for i, line in enumerate(new_lines):
-                if line.strip().lower().startswith(("include", "match")):
-                    insert_index = i
+        # Önce gerçekten aktif satır var mı kontrol et
+        grep_cmd = ["grep", "-iR", "^[[:space:]]*IgnoreRhosts", "/etc/ssh/sshd_config", "/etc/ssh/sshd_config.d/"]
+        grep_ok, grep_out = run_command(grep_cmd)
+        has_active = any(
+            line.strip().lower().startswith("ignorerhosts yes")
+            for line in grep_out.splitlines()
+            if not line.strip().startswith("#")
+        )
+
+        # Eğer aktif satır yoksa müdahale et
+        if not has_active:
+            with open(main_cfg, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            # İlk Include veya Match'ten önce eklenecek
+            insert_index = None
+            for idx, line in enumerate(lines):
+                if re.match(r'^\s*(Include|Match)\b', line, re.IGNORECASE):
+                    insert_index = idx
                     break
-            new_lines.insert(insert_index, "IgnoreRhosts yes\n")
+            if insert_index is None:
+                insert_index = 0
 
-        with open(SSHD_CONFIG, "w") as f:
-            f.writelines(new_lines)
+            # IgnoreRhosts satırı varsa (yorumlu olsa bile) bul
+            pattern = re.compile(r'^\s*#?\s*IgnoreRhosts\b', re.IGNORECASE)
+            existing_index = next((i for i, l in enumerate(lines) if pattern.match(l)), None)
 
-        ok, msg = check_sshd_ignorerhosts()
-        if ok:
-            return True, "IgnoreRhosts parametresi başarıyla 'yes' olarak ayarlandı."
+            if existing_index is None:
+                # Hiç yoksa ekle
+                lines.insert(insert_index, "IgnoreRhosts yes\n")
+            else:
+                # Varsa yorum satırını temizle ve yes yap
+                lines[existing_index] = "IgnoreRhosts yes\n"
+
+            # Yedekle
+            run_command(["cp", main_cfg, f"{main_cfg}.bak"])
+
+            with open(main_cfg, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+
+            ok_test, out_test = run_command(["sshd", "-t"])
+            if not ok_test:
+                run_command(["mv", f"{main_cfg}.bak", main_cfg])
+                return False, f"sshd -t doğrulaması başarısız: {out_test}"
+
+            run_command(["systemctl", "reload", "sshd"])
+
+        # Son doğrulama
+        ok_final, msg_final = check_sshd_ignorerhosts()
+        if ok_final:
+            return True, "IgnoreRhosts başarıyla 'yes' olarak ayarlandı veya zaten aktifti."
         else:
-            return False, f"Düzeltme uygulandı ama sorun devam ediyor: {msg}"
+            return False, f"Değişiklik uygulandı ama doğrulama başarısız: {msg_final}"
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
@@ -1066,34 +1242,58 @@ def apply_sshd_kexalgorithms(username=None, param=None):
 
 
 def check_sshd_logingracetime():
-    """CIS 5.1.13 - Check LoginGraceTime"""
-    conf_files = ["/etc/ssh/sshd_config"] + glob.glob("/etc/ssh/sshd_config.d/*.conf")
+    """
+    CIS 5.1.13 - Ensure sshd LoginGraceTime is configured (Automated)
+    LoginGraceTime değerinin 1-60 saniye arası olduğunu doğrular.
+    """
+    all_files = get_all_sshd_config_files()
     valid = True
     messages = []
 
-    for conf_file in conf_files:
+    # Dosya bazlı kontrol
+    for conf_file in all_files:
         try:
             with open(conf_file) as f:
                 for line in f:
-                    line_clean = line.strip()
-                    if line_clean.lower().startswith("logingracetime"):
-                        try:
-                            value = int(line_clean.split()[1])
-                            if 1 <= value <= 60:
-                                messages.append(f"{conf_file}: LoginGraceTime uygun ({value})")
-                            else:
+                    if re.match(r"^\s*LoginGraceTime", line, re.IGNORECASE):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            try:
+                                value = int(parts[1])
+                                if 1 <= value <= 60:
+                                    messages.append(f"{conf_file}: {value}")
+                                else:
+                                    valid = False
+                                    messages.append(f"{conf_file}: Hatalı ({value})")
+                            except ValueError:
                                 valid = False
-                                messages.append(f"{conf_file}: LoginGraceTime hatalı ({value})")
-                        except (IndexError, ValueError):
+                                messages.append(f"{conf_file}: Sayısal olmayan değer ({line.strip()})")
+                        else:
                             valid = False
-                            messages.append(f"{conf_file}: LoginGraceTime okunamadı ({line_clean})")
+                            messages.append(f"{conf_file}: Eksik değer ({line.strip()})")
                         break  # İlk occurrence geçerlidir
         except Exception as e:
             valid = False
             messages.append(f"{conf_file} okunamadı: {str(e)}")
 
+    # Runtime (sshd -T) doğrulaması
+    ok, output = run_command(["sshd", "-T"])
+    if not ok:
+        valid = False
+        messages.append(f"sshd -T çalıştırılamadı: {output}")
+    else:
+        match = re.search(r"logingracetime\s+(\d+)", output)
+        if match:
+            runtime_val = int(match.group(1))
+            if not (1 <= runtime_val <= 60):
+                valid = False
+                messages.append(f"Runtime LoginGraceTime hatalı ({runtime_val})")
+        else:
+            valid = False
+            messages.append("Runtime LoginGraceTime bulunamadı")
+
     if valid:
-        return True, "Tüm dosyalarda LoginGraceTime uygun. " + "; ".join(messages)
+        return True, "LoginGraceTime uygun: " + "; ".join(messages)
     else:
         return False, "LoginGraceTime hatalı: " + "; ".join(messages)
 
@@ -1101,40 +1301,49 @@ def check_sshd_logingracetime():
 def apply_sshd_logingracetime(username=None, param=None):
     """
     CIS 5.1.13 - Apply LoginGraceTime
-    - param: dict, örn. {"LoginGraceTime": 60}
+    LoginGraceTime değerini 60 saniye (veya parametreye göre) olarak ayarlar.
     """
     try:
         param = param or {}
         value = int(param.get("LoginGraceTime", 60))
 
         check_ok, msg = check_sshd_logingracetime()
-        if check_ok and "hatalı" not in msg:
+        if check_ok:
             return True, f"Zaten uygun: {msg}"
 
-        conf_files = ["/etc/ssh/sshd_config"] + glob.glob("/etc/ssh/sshd_config.d/*.conf")
-        fixed_files = []
-        failed_files = []
 
-        for conf_file in conf_files:
-            try:
-                run_command(["sudo", "cp", conf_file, f"{conf_file}.bak"])
+        with open(SSHD_CONFIG, "r") as f:
+            lines = f.readlines()
 
-                run_command(["sudo", "sed", "-i", "/^\\s*LoginGraceTime/d", conf_file])
+        # Eski LoginGraceTime satırlarını kaldır
+        new_lines = [line for line in lines if not re.match(r"^\s*LoginGraceTime", line, re.IGNORECASE)]
 
-                run_command(["sudo", "sed", "-i", f"1iLoginGraceTime {value}", conf_file])
-                fixed_files.append(conf_file)
-            except Exception as e:
-                failed_files.append(f"{conf_file} hata: {str(e)}")
+        # CIS'e göre Include veya Match öncesine eklenmeli
+        inserted = False
+        for i, line in enumerate(new_lines):
+            if re.match(r"^\s*(Include|Match)", line, re.IGNORECASE):
+                new_lines.insert(i, f"LoginGraceTime {value}\n")
+                inserted = True
+                break
+        if not inserted:
+            new_lines.append(f"LoginGraceTime {value}\n")
 
-        ok, output = run_command(["sudo", "systemctl", "reload", "sshd"])
+        with open(SSHD_CONFIG, "w") as f:
+            f.writelines(new_lines)
+
+        ok, output = run_command(["sshd", "-t"])
+        if not ok:
+            return False, f"sshd config test başarısız: {output}"
+
+        ok, output = run_command(["systemctl", "reload", "sshd"])
         if not ok:
             return False, f"SSH servisi reload edilemedi: {output}"
 
         check_ok2, msg2 = check_sshd_logingracetime()
         if check_ok2:
-            return True, f"LoginGraceTime başarıyla ayarlandı: {value}. Düzeltme yapılan dosyalar: {fixed_files}"
+            return True, f"LoginGraceTime başarıyla ayarlandı: {value}. {msg2}"
         else:
-            return False, f"Uygulama sonrası kontrol başarısız: {msg2}. Hatalı dosyalar: {failed_files}"
+            return False, f"Uygulama sonrası doğrulama başarısız: {msg2}"
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
@@ -1155,15 +1364,37 @@ def check_sshd_loglevel(param=None):
         if not success:
             return False, f"sshd -T çalıştırılamadı: {output}"
 
+        loglevel = None
         for line in output.splitlines():
             if line.strip().startswith("loglevel"):
-                current_level = line.split()[1].upper()
-                if current_level in expected_levels:
-                    return True, f"sshd LogLevel uyumlu: {current_level}"
-                else:
-                    return False, f"sshd LogLevel uyumsuz: {current_level}, beklenen: {expected_levels}"
+                loglevel = line.split()[1].upper()
+                break
 
-        return False, "sshd LogLevel ayarı bulunamadı."
+        if loglevel not in expected_levels:
+            return False, f"Global LogLevel uyumsuz: {loglevel}, beklenen: {expected_levels}"
+
+        test_users = ["root", "sshd"]
+        for user in test_users:
+            ok, match_out = run_command(["sshd", "-T", "-C", f"user={user}"])
+            if ok:
+                for line in match_out.splitlines():
+                    if line.strip().startswith("loglevel"):
+                        match_level = line.split()[1].upper()
+                        if match_level not in expected_levels:
+                            return False, f"Match bloğu ({user}) LogLevel={match_level}, beklenen: {expected_levels}"
+
+        for file_path in get_all_sshd_config_files():
+            try:
+                with open(file_path, "r") as f:
+                    for line in f:
+                        if line.strip().lower().startswith("loglevel "):
+                            level = line.split()[1].upper()
+                            if level not in expected_levels:
+                                return False, f"{file_path} içinde uyumsuz LogLevel: {level}"
+            except Exception:
+                continue
+
+        return True, f"sshd LogLevel uyumlu ({loglevel})"
     except Exception as e:
         return False, f"Hata (check_sshd_loglevel): {str(e)}"
 
@@ -1176,57 +1407,54 @@ def apply_sshd_loglevel(username=None, param=None):
     """
     param = param or {}
     desired_level = param.get("level", "INFO").upper()
-
-    is_ok, message = check_sshd_loglevel(param)
-    if is_ok:
-        return True, f"İşlem yapılmadı: {message}"
-
     valid_levels = ["INFO", "VERBOSE"]
     if desired_level not in valid_levels:
         return False, f"Geçersiz loglevel parametresi: {desired_level}. Sadece {valid_levels} kullanılabilir."
 
-    backup_file = f"{SSHD_CONFIG}.bak"
-
     try:
-        shutil.copy2(SSHD_CONFIG, backup_file)
+        all_files = get_all_sshd_config_files()
+        if not all_files:
+            all_files = [SSHD_CONFIG]
 
-        with open(SSHD_CONFIG, "r") as f:
+        main_cfg = all_files[0]
+        backup_file = f"{main_cfg}.bak"
+        shutil.copy2(main_cfg, backup_file)
+
+        # Dosya oku
+        with open(main_cfg, "r", encoding="utf-8") as f:
             lines = f.readlines()
 
-        new_lines = []
-        loglevel_set = False
-        for line in lines:
-            if line.strip().lower().startswith("loglevel") and not loglevel_set:
-                new_lines.append(f"LogLevel {desired_level}\n")
-                loglevel_set = True
-            else:
-                new_lines.append(line)
+        # Yorumlu veya yorum olmayan tüm LogLevel satırlarını bul
+        pattern = re.compile(r'^\s*#?\s*LogLevel\b', re.IGNORECASE)
+        found_index = next((i for i, l in enumerate(lines) if pattern.match(l)), None)
 
-        if not loglevel_set:
+        if found_index is not None:
+            # Satırı aktif hale getir ve doğru değeri yaz
+            lines[found_index] = f"LogLevel {desired_level}\n"
+        else:
+            # İlk Include veya Match'ten önce ekle
             insert_index = 0
-            for i, line in enumerate(new_lines):
-                if line.strip().lower().startswith(("include", "match")):
+            for i, line in enumerate(lines):
+                if re.match(r'^\s*(Include|Match)\b', line, re.IGNORECASE):
                     insert_index = i
                     break
-            new_lines.insert(insert_index, f"LogLevel {desired_level}\n")
+            lines.insert(insert_index, f"LogLevel {desired_level}\n")
 
-        with open(SSHD_CONFIG, "w") as f:
-            f.writelines(new_lines)
+        with open(main_cfg, "w", encoding="utf-8") as f:
+            f.writelines(lines)
 
         ok, out = run_command(["sshd", "-t"])
         if not ok:
-            shutil.copy2(backup_file, SSHD_CONFIG)
-            return False, f"sshd config test başarısız: {out}"
+            shutil.copy2(backup_file, main_cfg)
+            return False, f"sshd -t doğrulaması başarısız: {out}"
 
-        success, output = run_command(["systemctl", "reload", "sshd"])
-        if not success:
-            return False, f"sshd reload başarısız: {output}"
+        run_command(["systemctl", "reload", "sshd"])
 
-        ok, msg = check_sshd_loglevel({"level": desired_level})
-        if ok:
-            return True, f"sshd LogLevel {desired_level} olarak ayarlandı. (Yedek: {backup_file})"
+        ok_final, msg_final = check_sshd_loglevel({"level": desired_level})
+        if ok_final:
+            return True, f"LogLevel başarıyla '{desired_level}' yapıldı. (Yedek: {backup_file})"
         else:
-            return False, f"LogLevel yazıldı ama doğrulama başarısız: {msg}"
+            return False, f"Doğrulama başarısız: {msg_final}"
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
@@ -1237,8 +1465,13 @@ def apply_sshd_loglevel(username=None, param=None):
 
 BACKUP_CONFIG = "/etc/ssh/sshd_config.bak"
 
+SECURE_MACS = [
+    "hmac-sha2-512",
+    "hmac-sha2-256",
+    "hmac-sha1"
+]
+
 WEAK_MACS = [
-    # CIS tarafından zayıf kabul edilenler
     "hmac-md5",
     "hmac-md5-96",
     "hmac-ripemd160",
@@ -1249,154 +1482,204 @@ WEAK_MACS = [
     "hmac-ripemd160-etm@openssh.com",
     "hmac-sha1-96-etm@openssh.com",
     "umac-64-etm@openssh.com",
-    "umac-128-etm@openssh.com",
-
-    # CVE-2023-48795 kapsamında disable edilmesi önerilen etm MAC’ler
-    "hmac-sha1-etm@openssh.com",
-    "hmac-sha2-256-etm@openssh.com",
-    "hmac-sha2-512-etm@openssh.com"
+    "umac-128-etm@openssh.com"
 ]
 
-def check_sshd_macs(param):
+def check_sshd_macs(param=None):
     """
-    CIS 5.1.15 - SSHD MAC algoritmalarını kontrol et.
+    CIS 5.1.15 - Check MAC algorithms
+    Zayıf MAC kullanımı var mı kontrol eder.
     """
     param = param or {}
-    allowed_macs = param.get("allowed_macs", [])
-
-    success, result = run_command(["sshd", "-T"])
-    if not success:
-        return False, f"sshd -T çalıştırılamadı: {result}"
+    ok, output = run_command(["sshd", "-T"])
+    if not ok:
+        return False, f"sshd -T çalıştırılamadı: {output}"
 
     current_macs = []
-    for line in result.splitlines():
-
+    for line in output.splitlines():
         if line.strip().startswith("macs"):
             current_macs = line.split()[1].split(",")
+            break
 
     if not current_macs:
         return False, "MACs ayarı bulunamadı."
 
     for weak in WEAK_MACS:
         if weak in current_macs:
-            return False, f"Zayıf MAC bulundu: {weak}"
+            return False, f"Zayıf MAC tespit edildi: {weak}"
 
-    if allowed_macs:
-        if set(current_macs) != set(allowed_macs):
-            return False, f"Mevcut MAC listesi beklenenden farklı. Mevcut: {current_macs}"
-
-    return True, "SSHD MACs ayarı güvenli."
+    return True, f"MACs güvenli: {','.join(current_macs)}"
 
 
-
-def apply_sshd_macs(username=None, parameters=None):
+def apply_sshd_macs(username=None, param=None):
     """
-    CIS 5.1.15 - - Uygulama fonksiyonu
-    sshd_config içine güvenli MACs algoritmalarını ekler/düzenler.
+    CIS 5.1.15 - Ensure sshd MACs are configured
+    Güçlü MAC algoritmalarını uygular.
     """
     try:
+        all_files = get_all_sshd_config_files()
+        if not all_files:
+            all_files = [SSHD_CONFIG]
 
-        if not os.path.exists(SSHD_CONFIG):
-            return False, f"{SSHD_CONFIG} bulunamadı."
+        main_cfg = all_files[0]
+        backup_file = f"{main_cfg}.bak"
 
-        allowed_macs = parameters.get("allowed_macs") if parameters else None
-        if not allowed_macs:
-            return False, "allowed_macs parametresi bulunamadı."
+        if not os.path.exists(backup_file):
+            run_command(["cp", main_cfg, backup_file])
 
-        # Tek string verilirse listeye dönüştür
+        ok, msg = check_sshd_macs()
+        if ok:
+            return True, f"Zaten uygun: {msg}"
+
+        allowed_macs = param.get("allowed_macs") if param else SECURE_MACS
         if isinstance(allowed_macs, str):
             allowed_macs = [allowed_macs]
 
-        # MACs satırı hazırla
-        macs_line = "MACs " + ",".join(allowed_macs) + "\n"
+        new_line = f"MACs {','.join(allowed_macs)}\n"
 
-        with open(SSHD_CONFIG, "r") as f:
+        with open(main_cfg, "r", encoding="utf-8") as f:
             lines = f.readlines()
 
-        new_lines = []
-        found = False
-        for line in lines:
-            if line.strip().startswith("MACs"):
-                new_lines.append(macs_line)
-                found = True
-            else:
-                new_lines.append(line)
+        # İlk Include veya Match öncesine ekle
+        insert_index = 0
+        for i, line in enumerate(lines):
+            if re.match(r'^\s*(Include|Match)\b', line, re.IGNORECASE):
+                insert_index = i
+                break
 
-        if not found:
-            new_lines.append(macs_line)
+        pattern = re.compile(r'^\s*#?\s*MACs\b', re.IGNORECASE)
+        existing_index = next((i for i, l in enumerate(lines) if pattern.match(l)), None)
 
-        with open(SSHD_CONFIG, "w") as f:
-            f.writelines(new_lines)
+        if existing_index is None:
+            lines.insert(insert_index, new_line)
+        else:
+            lines[existing_index] = new_line
 
-        # Konfigürasyon test et
-        ok, out = run_command(["sshd", "-t"])
-        if not ok:
-            return False, f"sshd config test başarısız: {out}"
+        with open(main_cfg, "w", encoding="utf-8") as f:
+            f.writelines(lines)
 
-        # Servisi yeniden başlat
-        ok, out = run_command(["systemctl", "restart", "ssh"])
-        if not ok:
-            return False, f"sshd restart çalıştırılamadı: {out}"
+        # Doğrulama testi
+        ok_test, out_test = run_command(["sshd", "-t"])
+        if not ok_test:
+            run_command(["cp", backup_file, main_cfg])
+            return False, f"sshd -t başarısız: {out_test}"
 
-        return True, f"MACs başarıyla uygulandı: {','.join(allowed_macs)}"
+        # Servisi reload et
+        run_command(["systemctl", "reload", "sshd"])
+
+        ok_final, msg_final = check_sshd_macs()
+        if ok_final:
+            return True, f"MACs başarıyla ayarlandı: {','.join(allowed_macs)}"
+        else:
+            return False, f"Ayar yazıldı ama doğrulama başarısız: {msg_final}"
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
-        logger.error(f"[CIS 5.1.13][APPLY] {msg}")
-        return False, msg
+        logger.error(f"[CIS 5.1.15][APPLY] {msg}")
+        return False, f"MACs düzenlenemedi: {msg}"
 
 
 
-def check_sshd_maxauthtries():
+
+def check_sshd_maxauthtries(test_user: str = None):
     """
     CIS 5.1.16 - Check MaxAuthTries
     """
     ok, output = run_command(["sshd", "-T"])
     if not ok:
-        return False, f"sshd konfigürasyonu kontrol edilemedi: {output}"
+        return False, f"sshd -T çalıştırılamadı: {output}", None
 
-    for line in output.splitlines():
-        if line.lower().startswith("maxauthtries"):
-            try:
-                value = int(line.split()[1])
-                if value <= 4:
-                    return True, f"MaxAuthTries uygun: {value}", value
-                else:
-                    return False, f"MaxAuthTries çok yüksek: {value}", value
-            except (ValueError, IndexError):
-                return False, f"MaxAuthTries değeri okunamadı: {line}", None
+    def extract_value(out):
+        for line in out.splitlines():
+            if line.strip().lower().startswith("maxauthtries"):
+                try:
+                    return int(line.split()[1])
+                except Exception:
+                    return None
+        return None
 
-    # Ayar yoksa, varsayılan değer 6'dır ve uygunsuzdur
-    return False, "MaxAuthTries ayarı bulunamadı, varsayılan değer 6 ve uygunsuz.", None
+    value = extract_value(output)
+    if value is None:
+        return False, "MaxAuthTries parametresi bulunamadı (varsayılan 6 uygunsuz).", None
+
+    if value > 4:
+        return False, f"MaxAuthTries çok yüksek: {value}", value
+
+    # Match blok kontrolü
+    if test_user:
+        ok2, out2 = run_command(["sshd", "-T", "-C", f"user={test_user}"])
+        if ok2:
+            match_val = extract_value(out2)
+            if match_val and match_val > 4:
+                return False, f"Match bloğunda MaxAuthTries={match_val}", match_val
+
+    return True, f"MaxAuthTries uygun: {value}", value
 
 
 def apply_sshd_maxauthtries(username=None, param=None):
     """
     CIS 5.1.16 - Apply MaxAuthTries
     param: dict, örn. {"MaxAuthTries": 3}
+
+    - sshd -t testi başarısız olursa geri alır
     """
-    value = int(param.get("MaxAuthTries", 4)) if param else 4
+    desired = int(param.get("MaxAuthTries", 4)) if param else 4
 
     try:
-        check_ok, msg, current_value = check_sshd_maxauthtries()
+        all_files = get_all_sshd_config_files()
+        if not all_files:
+            all_files = [SSHD_CONFIG]
 
-        # Eğer mevcut değer aynıysa yine de değiştirelim (senin istediğin davranış)
-        if check_ok and current_value == value:
-            return True, f"Zaten uygun ama gelen parametreyle güncellendi: {value}"
+        main_cfg = all_files[0]
+        backup_path = f"{main_cfg}.bak"
 
-        run_command(["cp", SSHD_CONFIG, f"{SSHD_CONFIG}.bak"])
-        run_command(["sudo", "sed", "-i", "/^\\s*MaxAuthTries/d", SSHD_CONFIG])
-        run_command(["sudo", "sed", "-i", f"1iMaxAuthTries {value}", SSHD_CONFIG])
+        # Eğer .bak yoksa bir defalık oluştur
+        if not os.path.exists(backup_path):
+            run_command(["cp", main_cfg, backup_path])
 
-        ok, output = run_command(["sudo", "systemctl", "reload", "sshd"])
-        if not ok:
-            return False, f"sshd servisi yeniden yüklenemedi: {output}"
+        ok, msg, current = check_sshd_maxauthtries()
+        if ok and current == desired:
+            return True, f"MaxAuthTries zaten uygun: {current}"
 
-        check_ok2, msg2, _ = check_sshd_maxauthtries()
-        if check_ok2:
-            return True, f"MaxAuthTries başarıyla ayarlandı: {value}. {msg2}"
+        # Mevcut satırları oku
+        with open(main_cfg, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        # İlk Include veya Match öncesine ekleme
+        insert_index = 0
+        for i, line in enumerate(lines):
+            if re.match(r'^\s*(Include|Match)\b', line, re.IGNORECASE):
+                insert_index = i
+                break
+
+        # #MaxAuthTries gibi yorumlu satırları da yakala
+        pattern = re.compile(r'^\s*#?\s*MaxAuthTries\b', re.IGNORECASE)
+        existing_index = next((i for i, l in enumerate(lines) if pattern.match(l)), None)
+
+        # Satır varsa değiştir, yoksa yeni ekle
+        new_line = f"MaxAuthTries {desired}\n"
+        if existing_index is None:
+            lines.insert(insert_index, new_line)
         else:
-            return False, f"Uygulama sonrası kontrol başarısız: {msg2}"
+            lines[existing_index] = new_line
+
+        # Dosyayı yeniden yaz
+        with open(main_cfg, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+        # sshd konfigürasyon testi
+        ok_test, out_test = run_command(["sshd", "-t"])
+        if not ok_test:
+            run_command(["cp", backup_path, main_cfg])
+            return False, f"sshd -t doğrulaması başarısız: {out_test}"
+
+        run_command(["systemctl", "reload", "sshd"])
+
+        ok_final, msg_final, val_final = check_sshd_maxauthtries()
+        if ok_final:
+            return True, f"MaxAuthTries başarıyla {val_final} olarak ayarlandı."
+        else:
+            return False, f"Düzeltme yapıldı ama kontrol başarısız: {msg_final}"
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
@@ -1404,57 +1687,97 @@ def apply_sshd_maxauthtries(username=None, param=None):
         return False, f"Hata: {msg}"
 
 
-def check_sshd_maxsessions():
+def check_sshd_maxsessions(test_user: str = None):
+    """
+    CIS 5.1.17 - Check MaxSessions.
+    - MaxSessions 10 veya daha az olmalı.
+    """
     ok, output = run_command(["sshd", "-T"])
     if not ok:
         return False, f"sshd -T çalıştırılamadı: {output}"
 
-    for line in output.splitlines():
-        if line.lower().startswith("maxsessions"):
-            try:
-                value = int(line.split()[1])
-                if value <= 10:
-                    return True, f"MaxSessions uygun: {value}"
-                else:
-                    return False, f"MaxSessions çok yüksek: {value}"
-            except (ValueError, IndexError):
-                return False, f"MaxSessions değeri okunamadı: {line}"
+    def get_value(out):
+        for line in out.splitlines():
+            if line.lower().startswith("maxsessions"):
+                try:
+                    return int(line.split()[1])
+                except Exception:
+                    return None
+        return None
 
-    return False, "MaxSessions ayarı bulunamadı (varsayılan 10)."
+    val_global = get_value(output)
+    if val_global is None:
+        return False, "MaxSessions ayarı bulunamadı (varsayılan 10)."
+    if val_global > 10:
+        return False, f"MaxSessions çok yüksek: {val_global}"
 
+    # Match blok kontrolü
+    if test_user:
+        ok_c, out_c = run_command(["sshd", "-T", "-C", f"user={test_user}"])
+        if ok_c:
+            val_match = get_value(out_c)
+            if val_match and val_match > 10:
+                return False, f"Match bloğunda MaxSessions çok yüksek: {val_match}"
+
+    return True, f"MaxSessions uygun: {val_global}"
 
 
 def apply_sshd_maxsessions(username=None, param=None):
-    """CIS 5.1.17 - Apply MaxSessions 10 veya daha az"""
+    """
+    CIS 5.1.17 - Apply MaxSessions 10 veya daha az olacak şekilde ayarla.
+    - Include veya Match öncesine ekler.
+    """
+    desired = int(param.get("MaxSessions", 10)) if param else 10
+
     try:
-        check_ok, msg = check_sshd_maxsessions()
-        if check_ok:
+        all_files = get_all_sshd_config_files()
+        if not all_files:
+            all_files = [SSHD_CONFIG]
+
+        main_cfg = all_files[0]
+        backup_path = f"{main_cfg}.bak"
+
+        if not os.path.exists(backup_path):
+            run_command(["cp", main_cfg, backup_path])
+
+        ok, msg = check_sshd_maxsessions()
+        if ok:
             return True, f"Zaten uygun: {msg}"
 
-        maxsessions_value = param.get("maxsessions", 10)
+        with open(main_cfg, "r", encoding="utf-8") as f:
+            lines = f.readlines()
 
-        conf_files = ["/etc/ssh/sshd_config"] + glob.glob("/etc/ssh/sshd_config.d/*.conf")
-        fixed_files = []
-        failed_files = []
+        insert_index = 0
+        for i, line in enumerate(lines):
+            if re.match(r'^\s*(Include|Match)\b', line, re.IGNORECASE):
+                insert_index = i
+                break
 
-        for conf_file in conf_files:
-            try:
-                run_command(["sudo", "cp", conf_file, f"{conf_file}.bak"])
-                run_command(["sudo", "sed", "-i", "/^\\s*MaxSessions/d", conf_file])
-                run_command(["sudo", "sed", "-i", f"1iMaxSessions {maxsessions_value}", conf_file])
-                fixed_files.append(conf_file)
-            except Exception as e:
-                failed_files.append(f"{conf_file} hata: {str(e)}")
+        pattern = re.compile(r'^\s*#?\s*MaxSessions\b', re.IGNORECASE)
+        existing_index = next((i for i, l in enumerate(lines) if pattern.match(l)), None)
 
-        ok, output = run_command(["sudo", "systemctl", "reload", "sshd"])
-        if not ok:
-            return False, f"SSH servisi reload edilemedi: {output}"
-
-        check_ok2, msg2 = check_sshd_maxsessions()
-        if check_ok2:
-            return True, f"MaxSessions başarıyla ayarlandı: {maxsessions_value}. Düzeltme yapılan dosyalar: {fixed_files}"
+        new_line = f"MaxSessions {desired}\n"
+        if existing_index is None:
+            lines.insert(insert_index, new_line)
         else:
-            return False, f"Uygulama sonrası kontrol başarısız: {msg2}. Hatalı dosyalar: {failed_files}"
+            lines[existing_index] = new_line
+
+
+        with open(main_cfg, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+        ok_test, out_test = run_command(["sshd", "-t"])
+        if not ok_test:
+            run_command(["cp", backup_path, main_cfg])
+            return False, f"sshd -t başarısız: {out_test}"
+
+        run_command(["systemctl", "reload", "sshd"])
+
+        ok_final, msg_final = check_sshd_maxsessions()
+        if ok_final:
+            return True, f"MaxSessions başarıyla {desired} olarak ayarlandı."
+        else:
+            return False, f"Uygulama sonrası kontrol başarısız: {msg_final}"
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
@@ -1463,63 +1786,93 @@ def apply_sshd_maxsessions(username=None, param=None):
 
 
 
-def check_sshd_maxstartups():
+def check_sshd_maxstartups(test_user: str = None):
     """
-    CIS 5.1.18 - Check MaxStartups
+    CIS 5.1.18 - Ensure MaxStartups is configured (10:30:60 or stricter)
     """
     ok, output = run_command(["sshd", "-T"])
     if not ok:
-        return False, f"sshd konfigürasyonu okunamadı: {output}"
+        return False, f"sshd -T çalıştırılamadı: {output}"
 
-    for line in output.splitlines():
-        if line.lower().startswith("maxstartups"):
-            try:
-                value = line.split()[1]
-                parts = value.split(":")
-                if len(parts) == 3:
-                    start, pct, maxc = map(int, parts)
-                    if start <= 10 and pct <= 30 and maxc <= 60:
-                        return True, f"MaxStartups uygun: {value}"
-                    else:
-                        return False, f"MaxStartups çok gevşek: {value}"
-                else:
-                    return False, f"MaxStartups formatı hatalı: {value}"
-            except Exception as e:
-                return False, f"MaxStartups okunamadı: {str(e)}"
+    def parse_value(out):
+        for line in out.splitlines():
+            if line.lower().startswith("maxstartups"):
+                try:
+                    parts = line.split()[1].split(":")
+                    if len(parts) == 3:
+                        return tuple(map(int, parts))
+                except Exception:
+                    return None
+        return None
 
-    # Parametre yoksa varsayılan değer geçerli: 10:30:100 → uyumsuz
-    return False, "MaxStartups ayarı yok, varsayılan 10:30:100 uygunsuz."
+    value = parse_value(output)
+    if not value:
+        return False, "MaxStartups ayarı yok (varsayılan 10:30:100 uygunsuz)."
+
+    start, pct, maxc = value
+    if start <= 10 and pct <= 30 and maxc <= 60:
+        return True, f"MaxStartups uygun: {start}:{pct}:{maxc}"
+    else:
+        return False, f"MaxStartups çok gevşek: {start}:{pct}:{maxc}"
+
 
 
 def apply_sshd_maxstartups(username=None, param=None):
     """
-    CIS 5.1.18 - Apply MaxStartups
-    param: dict, örn. {"MaxStartups": "10:30:60"}
+    CIS 5.1.18 - Apply MaxStartups 10:30:60 (or stricter)
+    - Include veya Match öncesine ekler.
+
     """
-
-    check_ok, msg = check_sshd_maxstartups()
-    if check_ok:
-        return True, f"Zaten uygun: {msg}"
-
-    value = param.get("MaxStartups", "10:30:60") if param else "10:30:60"
+    desired = param.get("MaxStartups", "10:30:60") if param else "10:30:60"
 
     try:
+        all_files = get_all_sshd_config_files()
+        if not all_files:
+            all_files = [SSHD_CONFIG]
 
-        run_command(["cp", SSHD_CONFIG, f"{SSHD_CONFIG}.bak"])
+        main_cfg = all_files[0]
+        backup_path = f"{main_cfg}.bak"
 
-        run_command(["sudo", "sed", "-i", "/^\\s*MaxStartups/d", SSHD_CONFIG])
+        if not os.path.exists(backup_path):
+            run_command(["cp", main_cfg, backup_path])
 
-        run_command(["sudo", "sed", "-i", f"1iMaxStartups {value}", SSHD_CONFIG])
+        ok, msg = check_sshd_maxstartups()
+        if ok:
+            return True, f"Zaten uygun: {msg}"
 
-        ok, output = run_command(["sudo", "systemctl", "reload", "sshd"])
-        if not ok:
-            return False, f"sshd reload başarısız: {output}"
+        with open(main_cfg, "r", encoding="utf-8") as f:
+            lines = f.readlines()
 
-        check_ok2, msg2 = check_sshd_maxstartups()
-        if check_ok2:
-            return True, f"MaxStartups başarıyla ayarlandı: {value}. {msg2}"
+        insert_index = 0
+        for i, line in enumerate(lines):
+            if re.match(r'^\s*(Include|Match)\b', line, re.IGNORECASE):
+                insert_index = i
+                break
+
+        pattern = re.compile(r'^\s*#?\s*MaxStartups\b', re.IGNORECASE)
+        existing_index = next((i for i, l in enumerate(lines) if pattern.match(l)), None)
+
+        new_line = f"MaxStartups {desired}\n"
+        if existing_index is None:
+            lines.insert(insert_index, new_line)
         else:
-            return False, f"Ayar sonrası kontrol başarısız: {msg2}"
+            lines[existing_index] = new_line
+
+        with open(main_cfg, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+        ok_test, out_test = run_command(["sshd", "-t"])
+        if not ok_test:
+            run_command(["cp", backup_path, main_cfg])
+            return False, f"sshd -t doğrulama hatası: {out_test}"
+
+        run_command(["systemctl", "reload", "sshd"])
+
+        ok_final, msg_final = check_sshd_maxstartups()
+        if ok_final:
+            return True, f"MaxStartups başarıyla {desired} olarak ayarlandı."
+        else:
+            return False, f"Değişiklik yapıldı ancak doğrulama başarısız: {msg_final}"
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
@@ -1528,255 +1881,305 @@ def apply_sshd_maxstartups(username=None, param=None):
 
 
 
-def check_sshd_permitemptypasswords():
-    """CIS 5.1.19 - Check PermitEmptyPasswords"""
-    conf_files = [SSHD_CONFIG] + glob.glob("/etc/ssh/sshd_config.d/*.conf")
-    permit_ok = True
-    messages = []
+def check_sshd_permitemptypasswords(test_user: str = None):
+    """
+    CIS 5.1.19 - Ensure PermitEmptyPasswords is disabled.
+    - Beklenen: PermitEmptyPasswords no
+    """
+    ok, output = run_command(["sshd", "-T"])
+    if not ok:
+        return False, f"sshd -T çalıştırılamadı: {output}"
 
-    for conf_file in conf_files:
-        try:
-            with open(conf_file) as f:
-                for line in f:
-                    line_clean = line.strip()
-                    if line_clean.startswith("#"):
-                        continue
-                    if line_clean.lower().startswith("permitemptypasswords"):
-                        parts = line_clean.split()
-                        value = parts[1].lower() if len(parts) >= 2 else ""
-                        if value != "no":
-                            permit_ok = False
-                            messages.append(f"{conf_file}: PermitEmptyPasswords hatalı ({value})")
-                        else:
-                            messages.append(f"{conf_file}: PermitEmptyPasswords uygun ({value})")
+    def extract_value(out):
+        for line in out.splitlines():
+            if line.strip().lower().startswith("permitemptypasswords"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    return parts[1].lower()
+        return None
 
-        except Exception as e:
-            permit_ok = False
-            messages.append(f"{conf_file} okunamadı: {str(e)}")
+    value_global = extract_value(output)
+    if value_global != "no":
+        return False, f"PermitEmptyPasswords yanlış: {value_global or 'bulunamadı'}"
 
-    if permit_ok:
-        return True, "Tüm dosyalarda PermitEmptyPasswords uygun. " + "; ".join(messages)
-    else:
-        return False, "PermitEmptyPasswords hatalı: " + "; ".join(messages)
+    if test_user:
+        ok_c, out_c = run_command(["sshd", "-T", "-C", f"user={test_user}"])
+        if ok_c:
+            value_match = extract_value(out_c)
+            if value_match != "no":
+                return False, f"Match bloğunda PermitEmptyPasswords override edilmiş: {value_match}"
+        else:
+            return False, f"sshd -T -C user={test_user} çalıştırılamadı: {out_c}"
 
+    return True, "PermitEmptyPasswords doğru: no (Match blokları dahil)"
 
 
 def apply_sshd_permitemptypasswords(username=None, param=None):
     """
-    CIS 5.1.19 - Apply PermitEmptyPasswords
-    - param: dict, örn. {"PermitEmptyPasswords": "no"} veya {"PermitEmptyPasswords": "yes"}
+    CIS 5.1.19 - Ensure PermitEmptyPasswords is disabled.
+    - Her durumda aktif satır olarak 'PermitEmptyPasswords no' bırakır.
     """
+    desired = "no"
+
     try:
-        value =  "no"
+        all_files = get_all_sshd_config_files()
+        if not all_files:
+            all_files = [SSHD_CONFIG]
 
-        check_ok, msg = check_sshd_permitemptypasswords()
-        if check_ok and "hatalı" not in msg:
-            return True, f"Zaten uygun: {msg}"
+        main_cfg = all_files[0]
+        backup_path = f"{main_cfg}.bak"
 
-        conf_files = [SSHD_CONFIG] + glob.glob("/etc/ssh/sshd_config.d/*.conf")
-        fixed_files = []
-        failed_files = []
+        # Yedekleme sadece bir kez yapılır
+        if not os.path.exists(backup_path):
+            run_command(["cp", main_cfg, backup_path])
 
-        for conf_file in conf_files:
-            try:
-                run_command(["sudo", "cp", conf_file, f"{conf_file}.bak"])
+        with open(main_cfg, "r", encoding="utf-8") as f:
+            lines = f.readlines()
 
-                run_command(["sudo", "sed", "-i", "/^\\s*PermitEmptyPasswords/d", conf_file])
+        insert_index = 0
+        for i, line in enumerate(lines):
+            if re.match(r'^\s*(Include|Match)\b', line, re.IGNORECASE):
+                insert_index = i
+                break
 
-                run_command(["sudo", "sed", "-i", f"1iPermitEmptyPasswords {value}", conf_file])
+        pattern = re.compile(r'^\s*#*\s*PermitEmptyPasswords\b', re.IGNORECASE)
+        existing_index = next((i for i, l in enumerate(lines) if pattern.match(l)), None)
+        new_line = f"PermitEmptyPasswords {desired}\n"
 
-                fixed_files.append(conf_file)
-            except Exception as e:
-                failed_files.append(f"{conf_file} hata: {str(e)}")
-
-        ok, output = run_command(["sudo", "systemctl", "reload", "sshd"])
-        if not ok:
-            return False, f"SSH servisi reload edilemedi: {output}"
-
-        check_ok2, msg2 = check_sshd_permitemptypasswords()
-        if check_ok2:
-            return True, f"PermitEmptyPasswords başarıyla ayarlandı: {value}. Düzeltme yapılan dosyalar: {fixed_files}"
+        if existing_index is None:
+            lines.insert(insert_index, new_line)
         else:
-            return False, f"Uygulama sonrası kontrol başarısız: {msg2}. Hatalı dosyalar: {failed_files}"
+            lines[existing_index] = re.sub(
+                r'^\s*#*\s*(PermitEmptyPasswords).*',
+                fr'\1 {desired}',
+                lines[existing_index],
+                flags=re.IGNORECASE
+            ).strip() + "\n"
+
+        with open(main_cfg, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+        ok_test, out_test = run_command(["sshd", "-t"])
+        if not ok_test:
+            run_command(["cp", backup_path, main_cfg])
+            return False, f"sshd -t doğrulama hatası: {out_test}"
+
+        run_command(["systemctl", "reload", "sshd"])
+
+        ok_final, msg_final = check_sshd_permitemptypasswords()
+        if ok_final:
+            return True, "PermitEmptyPasswords başarıyla 'no' olarak aktif hale getirildi."
+        else:
+            return False, f"Değişiklik yapıldı ama doğrulama başarısız: {msg_final}"
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
         logger.error(f"[CIS 5.1.19][APPLY] {msg}")
-        return False, f"PermitEmptyPasswords uygulama hatası: {msg}"
+        return False, f"PermitEmptyPasswords düzenlenemedi: {msg}"
 
 
 
 
-def check_sshd_permitrootlogin():
-    """CIS 5.1.20 - Check PermitRootLogin """
+def check_sshd_permitrootlogin(test_user: str = "root"):
+    """
+    CIS 5.1.20 - Ensure PermitRootLogin is disabled.
+    - Beklenen: PermitRootLogin no
+    - Match blokları dahil kontrol edilir.
+    """
+    ok, output = run_command(["sshd", "-T"])
+    if not ok:
+        return False, f"sshd -T çalıştırılamadı: {output}"
 
-    conf_files = ["/etc/ssh/sshd_config"] + glob.glob("/etc/ssh/sshd_config.d/*.conf")
-    permit_ok = True
-    messages = []
+    def extract_value(out):
+        for line in out.splitlines():
+            if line.strip().lower().startswith("permitrootlogin"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    return parts[1].lower()
+        return None
 
-    for conf_file in conf_files:
-        try:
-            with open(conf_file) as f:
-                for line in f:
-                    line_clean = line.strip()
-                    if line_clean.startswith("#"):
-                        continue  # yorum satırlarını atla
-                    if line_clean.lower().startswith("permitrootlogin"):
-                        parts = line_clean.split()
-                        value = parts[1].lower() if len(parts) >= 2 else ""
-                        if value != "no":
-                            permit_ok = False
-                            messages.append(f"{conf_file}: PermitRootLogin hatalı ({value})")
-                        else:
-                            messages.append(f"{conf_file}: PermitRootLogin uygun ({value})")
-        except Exception as e:
-            permit_ok = False
-            messages.append(f"{conf_file} okunamadı: {str(e)}")
+    value_global = extract_value(output)
+    if value_global != "no":
+        return False, f"PermitRootLogin yanlış: {value_global or 'bulunamadı'}"
 
-    if permit_ok:
-        return True, "Tüm dosyalarda PermitRootLogin uygun. " + "; ".join(messages)
-    else:
-        return False, "PermitRootLogin hatalı: " + "; ".join(messages)
+    if test_user:
+        ok_c, out_c = run_command(["sshd", "-T", "-C", f"user={test_user}"])
+        if ok_c:
+            value_match = extract_value(out_c)
+            if value_match != "no":
+                return False, f"Match bloğunda PermitRootLogin override edilmiş: {value_match}"
+        else:
+            return False, f"sshd -T -C user={test_user} çalıştırılamadı: {out_c}"
 
+    return True, "PermitRootLogin doğru: no (Match blokları dahil)"
 
 
 def apply_sshd_permitrootlogin(username=None, param=None):
     """
     CIS 5.1.20 - Apply PermitRootLogin
+    - 'PermitRootLogin no' satırını Include veya Match öncesine ekler.
     """
-    try:
-        value = "no"
+    desired = "no"
 
-        check_ok, msg = check_sshd_permitrootlogin()
-        if check_ok and "hatalı" not in msg:
+    try:
+        all_files = get_all_sshd_config_files()
+        if not all_files:
+            all_files = [SSHD_CONFIG]
+
+        main_cfg = all_files[0]
+        backup_path = f"{main_cfg}.bak"
+
+        if not os.path.exists(backup_path):
+            run_command(["cp", main_cfg, backup_path])
+
+        ok, msg = check_sshd_permitrootlogin()
+        if ok:
             return True, f"Zaten uygun: {msg}"
 
-        conf_files = ["/etc/ssh/sshd_config"] + glob.glob("/etc/ssh/sshd_config.d/*.conf")
-        fixed_files = []
-        failed_files = []
+        with open(main_cfg, "r", encoding="utf-8") as f:
+            lines = f.readlines()
 
-        for conf_file in conf_files:
-            try:
-                run_command(["sudo", "cp", conf_file, f"{conf_file}.bak"])
+        insert_index = 0
+        for i, line in enumerate(lines):
+            if re.match(r'^\s*(Include|Match)\b', line, re.IGNORECASE):
+                insert_index = i
+                break
 
-                run_command(["sudo", "sed", "-i", "/^\\s*PermitRootLogin/d", conf_file])
+        pattern = re.compile(r'^\s*#?\s*PermitRootLogin\b', re.IGNORECASE)
+        existing_index = next((i for i, l in enumerate(lines) if pattern.match(l)), None)
 
-                run_command(["sudo", "sed", "-i", f"1iPermitRootLogin {value}", conf_file])
-                fixed_files.append(conf_file)
-            except Exception as e:
-                failed_files.append(f"{conf_file} hata: {str(e)}")
+        new_line = f"PermitRootLogin {desired}\n"
 
-        ok, output = run_command(["sudo", "systemctl", "reload", "sshd"])
-        if not ok:
-            return False, f"SSH servisi reload edilemedi: {output}"
-
-        check_ok2, msg2 = check_sshd_permitrootlogin()
-        if check_ok2:
-            return True, f"PermitRootLogin başarıyla ayarlandı: {value}. Düzeltme yapılan dosyalar: {fixed_files}"
+        if existing_index is None:
+            lines.insert(insert_index, new_line)
         else:
-            return False, f"Uygulama sonrası kontrol başarısız: {msg2}. Hatalı dosyalar: {failed_files}"
+            lines[existing_index] = new_line
+
+        with open(main_cfg, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+        ok_test, out_test = run_command(["sshd", "-t"])
+        if not ok_test:
+            run_command(["cp", backup_path, main_cfg])
+            return False, f"sshd -t başarısız: {out_test}"
+
+        run_command(["systemctl", "reload", "sshd"])
+
+        ok_final, msg_final = check_sshd_permitrootlogin()
+        if ok_final:
+            return True, "PermitRootLogin başarıyla 'no' olarak ayarlandı."
+        else:
+            return False, f"Değişiklik yapıldı ancak doğrulama başarısız: {msg_final}"
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
         logger.error(f"[CIS 5.1.20][APPLY] {msg}")
-        return False, f"PermitRootLogin uygulama hatası: {msg}"
+        return False, f"PermitRootLogin düzenlenemedi: {msg}"
+
 
 
 def check_sshd_permit_user_environment():
     """
-    CIS 5.1.21 - Ensure sshd PermitUserEnvironment is disabled
-    
-    Kontrol fonksiyonu: sshd PermitUserEnvironment ayarı "no" mu diye kontrol eder.
-    
-    Returns:
-        (bool, str): True/False ve açıklama mesajı
+    CIS 5.1.21 - Ensure sshd PermitUserEnvironment is disabled.
+    Beklenen: PermitUserEnvironment no
     """
-    try:
-        
-        success, output = run_command(["sshd", "-T"])
-        if not success:
-            return False, f"sshd -T çalıştırılamadı: {output}"
+    ok, output = run_command(["sshd", "-T"])
+    if not ok:
+        return False, f"sshd -T çalıştırılamadı: {output}"
 
-        for line in output.stdout.splitlines():
-            if line.strip().lower().startswith("permituserenvironment"):
-                value = line.strip().split()[1].lower()
-                if value == "no":
-                    return True, "PermitUserEnvironment zaten 'no' olarak ayarlanmış."
-                else:
-                    return False, f"PermitUserEnvironment '{value}' olarak ayarlı, 'no' olmalı."
-        return False, "PermitUserEnvironment ayarı bulunamadı, 'no' olarak ayarlanmalı."
-    except Exception as e:
-        return False, f"Kontrol sırasında hata oluştu: {e}"
+    for line in output.splitlines():
+        if line.strip().lower().startswith("permituserenvironment"):
+            value = line.split()[1].lower()
+            if value == "no":
+                return True, "PermitUserEnvironment doğru: no"
+            else:
+                return False, f"PermitUserEnvironment yanlış: {value}"
+    return False, "PermitUserEnvironment ayarı bulunamadı (varsayılan 'no' olmalı)."
 
 
 def apply_sshd_permit_user_environment(username=None, param=None):
     """
-    CIS 5.1.21 - Ensure sshd PermitUserEnvironment is disabled
-    
-    Düzeltme fonksiyonu: PermitUserEnvironment 'no' değilse, düzeltir.
+    CIS 5.1.21 - Ensure PermitUserEnvironment is disabled.
+    - Her durumda aktif satır olarak 'PermitUserEnvironment no' bırakır.
     """
+    desired = "no"
+
     try:
-        is_ok, message = check_sshd_permit_user_environment()
-        if is_ok:
-            return True, message
+        all_files = get_all_sshd_config_files()
+        if not all_files:
+            all_files = [SSHD_CONFIG]
 
-        try:
-            config_file = "/etc/ssh/sshd_config"
-            backup_file = f"{config_file}.bak"
+        main_cfg = all_files[0]
+        backup_path = f"{main_cfg}.bak"
 
-            shutil.copy2(config_file, backup_file)
+        if not os.path.exists(backup_path):
+            run_command(["cp", main_cfg, backup_path])
 
-            with open(config_file, "r") as f:
-                lines = f.readlines()
+        with open(main_cfg, "r", encoding="utf-8") as f:
+            lines = f.readlines()
 
-            found = False
-            with open(config_file, "w") as f:
-                for line in lines:
-                    if line.strip().lower().startswith("permituserenvironment"):
-                        f.write("PermitUserEnvironment no\n")
-                        found = True
-                    else:
-                        f.write(line)
-                if not found:
-                    f.write("\nPermitUserEnvironment no\n")
+        insert_index = 0
+        for i, line in enumerate(lines):
+            if re.match(r'^\s*(Include|Match)\b', line, re.IGNORECASE):
+                insert_index = i
+                break
 
-            success, output = run_command(["systemctl", "restart", "sshd"])
-            if not success:
-                return False, f"sshd -T çalıştırılamadı: {output}"
+        pattern = re.compile(r'^\s*#*\s*PermitUserEnvironment\b', re.IGNORECASE)
+        existing_index = next((i for i, l in enumerate(lines) if pattern.match(l)), None)
+        new_line = f"PermitUserEnvironment {desired}\n"
 
-            return True, "PermitUserEnvironment 'no' olarak ayarlandı ve sshd yeniden başlatıldı."
-        except Exception as e:
-            return False, f"Düzeltme sırasında hata oluştu: {e}"
+        if existing_index is None:
+            lines.insert(insert_index, new_line)
+        else:
+            lines[existing_index] = re.sub(
+                r'^\s*#*\s*(PermitUserEnvironment).*',
+                fr'\1 {desired}',
+                lines[existing_index],
+                flags=re.IGNORECASE
+            ).strip() + "\n"
+
+        with open(main_cfg, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+        ok_test, out_test = run_command(["sshd", "-t"])
+        if not ok_test:
+            run_command(["cp", backup_path, main_cfg])
+            return False, f"sshd -t doğrulama başarısız: {out_test}"
+
+        run_command(["systemctl", "reload", "sshd"])
+
+        ok_final, msg_final = check_sshd_permit_user_environment()
+        if ok_final:
+            return True, "PermitUserEnvironment başarıyla 'no' olarak aktif hale getirildi."
+        else:
+            return False, f"Değişiklik yapıldı ancak doğrulama başarısız: {msg_final}"
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
         logger.error(f"[CIS 5.1.21][APPLY] {msg}")
-        return False, f"Uygulama sırasında hata: {msg}"
+        return False, f"PermitUserEnvironment düzenlenemedi: {msg}"
+
 
 
 
 def check_sshd_usepam():
     """
-    CIS 5.1.22: Ensure sshd UsePAM is enabled.
+    CIS 5.1.22 - Ensure sshd UsePAM is enabled.
+    Beklenen: UsePAM yes
     """
     try:
-        success, output = run_command(["sshd", "-T"])
-        if not success:
+        ok, output = run_command(["sshd", "-T"])
+        if not ok:
             return False, f"sshd -T çalıştırılamadı: {output}"
 
         for line in output.splitlines():
-            line_clean = line.strip()
-            if line_clean.startswith("#"):
-                continue
-            if line_clean.lower().startswith("usepam"):
-                parts = line_clean.split()
-                value = parts[1].lower() if len(parts) >= 2 else ""
+            if line.strip().lower().startswith("usepam"):
+                value = line.split()[1].lower()
                 if value == "yes":
-                    return True, "UsePAM doğru şekilde etkin: yes"
+                    return True, "UsePAM doğru: yes"
                 else:
-                    return False, f"UsePAM yanlış ayarlanmış: {value}"
-
-        return False, "UsePAM ayarı bulunamadı."
+                    return False, f"UsePAM yanlış: {value}"
+        return False, "UsePAM ayarı bulunamadı (varsayılan 'yes' olmalı)."
 
     except Exception as e:
         return False, f"Kontrol hatası: {str(e)}"
@@ -1784,39 +2187,67 @@ def check_sshd_usepam():
 
 def apply_sshd_usepam(username=None, param=None):
     """
-    CIS 5.1.22: UsePAM ayarını uygula.
+    CIS 5.1.22 - Apply UsePAM
+    - Include veya Match öncesine 'UsePAM yes' ekler.
+    - #UsePAM satırlarını aktif hale getirir.
     """
+    desired = "yes"
+
     try:
-        desired_value = "yes"
+        all_files = get_all_sshd_config_files()
+        if not all_files:
+            all_files = [SSHD_CONFIG]
 
-        if not desired_value:
-            return check_sshd_usepam()
+        main_cfg = all_files[0]
+        backup_path = f"{main_cfg}.bak"
 
-        sshd_config = "/etc/ssh/sshd_config"
+        if not os.path.exists(backup_path):
+            run_command(["cp", main_cfg, backup_path])
 
-        if not os.path.exists(sshd_config):
-            return False, f"{sshd_config} bulunamadı."
+        ok, msg = check_sshd_usepam()
+        if ok:
+            return True, f"Zaten uygun: {msg}"
 
-        with open(sshd_config, "r") as f:
+        with open(main_cfg, "r", encoding="utf-8") as f:
             lines = f.readlines()
 
-        new_lines = [line for line in lines if not line.strip().lower().startswith("usepam")]
+        insert_index = 0
+        for i, line in enumerate(lines):
+            if re.match(r'^\s*(Include|Match)\b', line, re.IGNORECASE):
+                insert_index = i
+                break
 
-        new_lines.append(f"UsePAM {desired_value}\n")
+        pattern = re.compile(r'^\s*#?\s*UsePAM\b', re.IGNORECASE)
+        existing_index = next((i for i, l in enumerate(lines) if pattern.match(l)), None)
 
-        with open(sshd_config, "w") as f:
-            f.writelines(new_lines)
+        new_line = f"UsePAM {desired}\n"
 
-        success, output = run_command(["systemctl", "reload", "sshd"])
-        if not success:
-            return False, f"sshd reload çalıştırılamadı: {output}"
+        if existing_index is None:
+            lines.insert(insert_index, new_line)
+        else:
+            lines[existing_index] = new_line
 
-        return check_sshd_usepam()
+        with open(main_cfg, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+        ok_test, out_test = run_command(["sshd", "-t"])
+        if not ok_test:
+            run_command(["cp", backup_path, main_cfg])
+            return False, f"sshd -t doğrulama hatası: {out_test}"
+
+        run_command(["systemctl", "reload", "sshd"])
+
+        ok_final, msg_final = check_sshd_usepam()
+        if ok_final:
+            return True, "UsePAM başarıyla 'yes' olarak ayarlandı."
+        else:
+            return False, f"Değişiklik yapıldı ancak doğrulama başarısız: {msg_final}"
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
         logger.error(f"[CIS 5.1.22][APPLY] {msg}")
-        return False, f"UsePAM ayarı uygulanırken hata: {msg}"
+        return False, f"UsePAM düzenlenemedi: {msg}"
+
 
 
 

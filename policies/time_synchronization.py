@@ -216,11 +216,6 @@ DROPIN_FILE_CHRONY = os.path.join(SOURCES_DIR_CHRONY, "60-sources.sources")
 
 
 def check_chrony_authorized_timeserver(param=None):
-    """
-    CIS 2.3.3.1 - Ensure chrony is configured with authorized timeserver
-    Kontrol: chrony.conf veya sources.d altında server/pool direktifi var mı?
-    Param ile gelen ntp_server ve fallback_servers değerleriyle doğrular.
-    """
     if not param:
         return False, "Kontrol için timeserver parametresi verilmedi."
 
@@ -243,19 +238,20 @@ def check_chrony_authorized_timeserver(param=None):
             with open(f, "r") as conf:
                 for line in conf:
                     stripped = line.strip()
+                    if not stripped or stripped.startswith("#"):
+                        continue
                     for srv in expected_servers:
-                        if stripped.startswith(("server", "pool")) and srv in stripped:
+                        if stripped.lower().startswith(("server", "pool")) and srv.lower() in stripped.lower():
                             found[srv] = True
-                            logger.info(f"[check_chrony_authorized_timeserver] Bulundu: {stripped} (dosya: {f})")
+                            logger.info(f"Bulundu: {srv} (dosya: {f})")
         except FileNotFoundError:
             continue
 
     if all(found.values()):
-        return True, "Chrony yetkili zaman sunucuları ile yapılandırılmış."
+        return True, f"Chrony tüm yetkili sunucularla yapılandırılmış: {', '.join(expected_servers)}"
     else:
         eksikler = [srv for srv, ok in found.items() if not ok]
-        return False, f"Chrony için eksik veya hatalı timeserver(lar): {', '.join(eksikler)}"
-
+        return False, f"Eksik/hatalı timeserver(lar): {', '.join(eksikler)} | Dosyalar: {', '.join(files_to_check)}"
 
 
 def apply_chrony_authorized_timeserver(username=None, param=None):
@@ -283,6 +279,9 @@ def apply_chrony_authorized_timeserver(username=None, param=None):
         if not os.path.exists(SOURCES_DIR_CHRONY):
             os.makedirs(SOURCES_DIR_CHRONY, exist_ok=True)
 
+        if os.path.exists(DROPIN_FILE_CHRONY):
+            shutil.copy(DROPIN_FILE_CHRONY, DROPIN_FILE_CHRONY + ".bak")
+
         servers = []
         if "ntp_server" in param:
             servers.append(param["ntp_server"])
@@ -293,8 +292,11 @@ def apply_chrony_authorized_timeserver(username=None, param=None):
             f.write("# CIS 2.3.3.1 - Authorized timeservers\n")
             for srv in servers:
                 f.write(f"server {srv} iburst\n")
+        os.chmod(DROPIN_FILE_CHRONY, 0o644)
 
-        run_command(["systemctl", "reload-or-restart", "chronyd"])
+        success, output = run_command(["systemctl", "reload-or-restart", "chronyd"])
+        if not success:
+            return False, f"chronyd yeniden yüklenemedi: {output}"
 
         logger.info("[apply_chrony_authorized_timeserver] Chrony authorized timeserver ile yapılandırıldı.")
         return True, "Chrony authorized timeserver ile yapılandırıldı."
