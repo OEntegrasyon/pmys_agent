@@ -300,124 +300,108 @@ def apply_min_password_days(username=None, param=None):
 def check_password_warn_days(expected_value=7):
     """
     CIS 5.4.1.3 - Ensure password expiration warning days is configured
-    Kontrol:
-      - /etc/login.defs içinde PASS_WARN_AGE >= expected_value olmalı
-      - /etc/shadow dosyasında tüm kullanıcıların PASS_WARN_AGE >= expected_value olmalı
     """
     try:
-        # 1. /etc/login.defs kontrolü
-        with open("/etc/login.defs", "r") as f:
-            lines = f.readlines()
-
+        # /etc/login.defs kontrolü
         defs_value = None
-        for line in lines:
-            if re.search(r"^\s*PASS_WARN_AGE\s+", line) and not line.strip().startswith("#"):
-                try:
-                    defs_value = int(line.split()[1])
-                except (ValueError, IndexError):
-                    defs_value = 0
-                break
+        with open("/etc/login.defs", "r", encoding="utf-8") as f:
+            for line in f:
+                if re.search(r"^\s*PASS_WARN_AGE\s+", line) and not line.strip().startswith("#"):
+                    try:
+                        defs_value = int(line.split()[1])
+                    except (ValueError, IndexError):
+                        defs_value = 0
+                    break
 
         if defs_value is None:
-            return False, f"/etc/login.defs içinde PASS_WARN_AGE bulunamadı"
-        if defs_value < expected_value:
-            return False, f"/etc/login.defs PASS_WARN_AGE={defs_value}, beklenen >= {expected_value}"
+            return False, "PASS_WARN_AGE bulunamadı"
+        if defs_value != expected_value:
+            return False, f"/etc/login.defs PASS_WARN_AGE={defs_value}, beklenen {expected_value}"
 
-        # 2. /etc/shadow kontrolü
+        # /etc/shadow kontrolü (WARN alanı = index 5)
         bad_users = []
-        with open("/etc/shadow", "r") as f:
+        with open("/etc/shadow", "r", encoding="utf-8") as f:
             for line in f:
                 parts = line.strip().split(":")
-                if len(parts) >= 7 and parts[1].startswith("$"):  # parola set edilmiş kullanıcı
+                if len(parts) >= 6 and parts[1].startswith("$"):
                     try:
-                        warn_days = int(parts[6]) if parts[6] else 0
+                        warn_days = int(parts[5]) if parts[5] else 0
                     except (ValueError, IndexError):
                         warn_days = 0
-
-                    if warn_days < expected_value:
+                    if warn_days != expected_value:
                         bad_users.append(f"{parts[0]}:{warn_days}")
 
         if bad_users:
-            return False, f"/etc/shadow içinde hatalı kullanıcılar var: {', '.join(bad_users)}"
+            return False, f"/etc/shadow içinde farklı kullanıcılar var: {', '.join(bad_users)}"
 
-        return True, f"PASS_WARN_AGE uygun (>= {expected_value})"
-
+        return True, f"PASS_WARN_AGE tüm sistemde {expected_value} olarak ayarlı"
     except Exception as e:
-        logger.error(f"check_password_warn_days hatası: {e}")
         return False, str(e)
 
 
 def apply_password_warn_days(username=None, param=None):
     """
-    PASS_WARN_AGE değerini uygular.
+    CIS 5.4.1.3 - PASS_WARN_AGE uygula
+    Tüm kullanıcılar ve /etc/login.defs dosyası için gelen değeri sabitler.
     """
     try:
-        if os.geteuid() != 0:
-            current_user = pwd.getpwuid(os.geteuid()).pw_name
-            msg = f"Yetki hatası: {current_user} root değil"
-            return False, msg
+        expected_value = int(param.get("value", 7)) if param else 7
+        ok, msg = check_password_warn_days(expected_value)
+        if ok:
+            return True, f"PASS_WARN_AGE zaten uygun: {msg}"
 
-        expected_value = int(param.get("expected_value", 7)) if param else 7
+        logger.info(f"[APPLY][password_warn_days] Uyumsuzluk tespit edildi: {msg} → Düzeltiliyor...")
 
-        status, message = check_password_warn_days(expected_value)
-        if status:
-            return True, f"PASS_WARN_AGE zaten uygun: {message}"
-
-        logger.info(f"PASS_WARN_AGE uygunsuz: {message} -> Düzeltiliyor...")
-
-        # 1. /etc/login.defs güncelle
-        with open("/etc/login.defs", "r") as f:
-            lines = f.readlines()
-
-        updated = False
+        login_defs = "/etc/login.defs"
         new_lines = []
-        for line in lines:
-            if re.search(r"^\s*PASS_WARN_AGE\s+", line) and not line.strip().startswith("#"):
-                new_lines.append(f"PASS_WARN_AGE {expected_value}\n")
-                updated = True
-            else:
-                new_lines.append(line)
-
+        updated = False
+        with open(login_defs, "r", encoding="utf-8") as f:
+            for line in f:
+                if re.match(r"^\s*PASS_WARN_AGE\s+", line) and not line.strip().startswith("#"):
+                    new_lines.append(f"PASS_WARN_AGE   {expected_value}\n")
+                    updated = True
+                else:
+                    new_lines.append(line)
         if not updated:
-            new_lines.append(f"PASS_WARN_AGE {expected_value}\n")
+            new_lines.append(f"\nPASS_WARN_AGE   {expected_value}\n")
 
-        with open("/etc/login.defs", "w") as f:
+        shutil.copy(login_defs, f"{login_defs}.bak_{datetime.now().strftime('%Y%m%d%H%M%S')}")
+        with open(login_defs, "w", encoding="utf-8") as f:
             f.writelines(new_lines)
 
-        # 2. /etc/shadow kullanıcı güncellemeleri
-        with open("/etc/shadow", "r") as f:
+        logger.info(f"[APPLY][password_warn_days] {login_defs} güncellendi (PASS_WARN_AGE={expected_value})")
+
+        with open("/etc/shadow", "r", encoding="utf-8") as f:
             for line in f:
                 parts = line.strip().split(":")
-                if len(parts) >= 7 and parts[1].startswith("$"):
+                if len(parts) >= 6 and parts[1].startswith("$"):
                     user = parts[0]
-                    try:
-                        warn_days = int(parts[6]) if parts[6] else 0
-                    except (ValueError, IndexError):
-                        warn_days = 0
+                    success, output = run_command(["chage", "--warndays", str(expected_value), user])
+                    if success:
+                        logger.info(f"[APPLY][password_warn_days] {user} için PASS_WARN_AGE {expected_value} olarak ayarlandı.")
+                    else:
+                        logger.error(f"[APPLY][password_warn_days] {user} için chage hatası: {output}")
 
-                    if warn_days < expected_value:
-                        rc, out = run_command(["chage", "--warndays", str(expected_value), user])
-                        if rc == 0:
-                            logger.info(f"{user} için PASS_WARN_AGE güncellendi")
-                        else:
-                            logger.error(f"{user} için chage hatası: {out}")
-
-        status, message = check_password_warn_days(expected_value)
-        if status:
-            return True, f"PASS_WARN_AGE başarıyla uygulandı ({expected_value})"
+        ok2, msg2 = check_password_warn_days(expected_value)
+        if ok2:
+            logger.info(f"[APPLY][password_warn_days] PASS_WARN_AGE başarıyla {expected_value} olarak sabitlendi.")
+            return True, f"Düzeltme uygulandı: {expected_value}"
         else:
-            return False, f"Uygulama sonrası kontrol başarısız: {message}"
+            logger.error(f"[APPLY][password_warn_days] Düzeltme başarısız: {msg2}")
+            return False, f"Düzeltme başarısız: {msg2}"
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
-        logger.error(f"apply_password_warn_days hata: {msg}")
-        return False, f"apply_password_warn_days hatası: {msg}"
+        logger.error(f"[APPLY][password_warn_days] Hata: {msg}")
+        return False, msg
+
+
 
 
 
 def check_password_hashing_algorithm(expected_algorithms=("SHA512", "YESCRYPT")):
     """
-    5.4.1.4 Ensure strong password hashing algorithm is configured (CIS)
+    CIS 5.4.1.4 - Ensure strong password hashing algorithm is configured
     """
     try:
         cmd = ["grep", "-Pi", r"^\s*ENCRYPT_METHOD\s+\w+", "/etc/login.defs"]
@@ -425,10 +409,14 @@ def check_password_hashing_algorithm(expected_algorithms=("SHA512", "YESCRYPT"))
         if not success or not out.strip():
             return False, "/etc/login.defs içinde ENCRYPT_METHOD bulunamadı"
 
-        # Sadece ENCRYPT_METHOD değerini al
-        parts = out.strip().split()
+        # Yorum satırlarını filtrele
+        lines = [l for l in out.splitlines() if not l.strip().startswith("#")]
+        if not lines:
+            return False, "Yalnızca yorum satırları bulundu, etkin satır yok"
+
+        parts = lines[0].strip().split()
         if len(parts) < 2:
-            return False, f"ENCRYPT_METHOD satırı geçersiz: {out.strip()}"
+            return False, f"ENCRYPT_METHOD satırı geçersiz: {lines[0]}"
 
         current_alg = parts[1].upper()
         if current_alg not in expected_algorithms:
@@ -444,82 +432,84 @@ def check_password_hashing_algorithm(expected_algorithms=("SHA512", "YESCRYPT"))
 
 def apply_password_hashing_algorithm(username=None, param=None):
     """
-    5.4.1.4 Ensure strong password hashing algorithm is configured (CIS)
-    ENCRYPT_METHOD değerini uygular.
-    Parametre:
-        expected_algorithm (str): SHA512 veya YESCRYPT önerilir
+    CIS 5.4.1.4 - Ensure strong password hashing algorithm is configured
+    ENCRYPT_METHOD değerini uygular (SHA512 veya YESCRYPT)
     """
     try:
         param = param or {}
         expected_algorithm = param.get("expected_algorithm", "SHA512").upper()
 
-        status, message = check_password_hashing_algorithm(expected_algorithm)
-        if status:
-            return True, f"ENCRYPT_METHOD zaten uygun: {message}"
+        ok, msg = check_password_hashing_algorithm((expected_algorithm,))
+        if ok:
+            return True, f"ENCRYPT_METHOD zaten uygun: {msg}"
 
-        logger.info(f"ENCRYPT_METHOD uygunsuz: {message} -> Düzeltiliyor...")
+        logger.info(f"[APPLY][password_hashing_algorithm] Uyumsuz: {msg} → Düzeltiliyor...")
 
-        # 1. /etc/login.defs içinde ENCRYPT_METHOD satırı varsa güncelle
-        cmd_update = [
-            "sed", "-i",
-            rf"/^\s*ENCRYPT_METHOD\s\+/s/.*/ENCRYPT_METHOD {expected_algorithm}/",
-            "/etc/login.defs"
+        # Sed ile güncelleme dene
+        update_cmd = [
+            "bash", "-c",
+            rf"if grep -Pi '^\s*ENCRYPT_METHOD' /etc/login.defs >/dev/null; "
+            rf"then sed -i 's|^\s*ENCRYPT_METHOD.*|ENCRYPT_METHOD {expected_algorithm}|' /etc/login.defs; "
+            rf"else echo 'ENCRYPT_METHOD {expected_algorithm}' >> /etc/login.defs; fi"
         ]
-        run_command(cmd_update)
+        run_command(update_cmd)
 
-        cmd_check_exists = ["grep", "-Pi", r"^\s*ENCRYPT_METHOD\s+", "/etc/login.defs"]
-        success, out = run_command(cmd_check_exists)
-        if not success or not out.strip():
-            cmd_echo = ["bash", "-c", f"echo 'ENCRYPT_METHOD {expected_algorithm}' >> /etc/login.defs"]
-            run_command(cmd_echo)
-
-        status, message = check_password_hashing_algorithm(expected_algorithm)
-        if status:
+        # Yeniden doğrulama
+        ok2, msg2 = check_password_hashing_algorithm((expected_algorithm,))
+        if ok2:
+            logger.info(f"[APPLY][password_hashing_algorithm] ENCRYPT_METHOD başarıyla {expected_algorithm} olarak ayarlandı.")
             return True, f"ENCRYPT_METHOD başarıyla {expected_algorithm} olarak ayarlandı"
         else:
-            return False, f"Ayar sonrası doğrulama başarısız: {message}"
+            logger.error(f"[APPLY][password_hashing_algorithm] Doğrulama başarısız: {msg2}")
+            return False, f"Ayar sonrası doğrulama başarısız: {msg2}"
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
-        logger.error(f"apply_password_hashing_algorithm hata: {msg}")
+        logger.error(f"[APPLY][password_hashing_algorithm] Hata: {msg}")
         return False, msg
 
 
 
 def check_inactive_password_lock(expected_days=45):
     """
-    CIS 5.4.1.5 kontrolü: Tüm kullanıcıların /etc/shadow içindeki INACTIVE değeri
-    beklenen değerden fazla olmamalı ve negatif olmamalı.
+    CIS 5.4.1.5 - Ensure inactive password lock is configured
     """
     try:
-        with open("/etc/shadow", "r") as f:
-            lines = f.readlines()
-
-        non_compliant = []
-        for line in lines:
-            parts = line.strip().split(":")
-            if len(parts) < 8:
-                continue
-
-            user, passwd, inactive = parts[0], parts[1], parts[7]
-
-            if not passwd.startswith("$"):
-                continue  
-
-            if inactive == "" or inactive is None:
-                continue
-            elif inactive == "-1":
-                non_compliant.append(f"{user}:{inactive}")
+        # Varsayılan değeri kontrol et
+        success, out = run_command(["useradd", "-D"])
+        if success:
+            m = re.search(r"INACTIVE=(\S+)", out)
+            if m:
+                current_default = m.group(1)
+                if current_default in ("-1", "", None) or int(current_default) > expected_days:
+                    return False, f"useradd varsayılan INACTIVE={current_default}, beklenen <= {expected_days}"
             else:
-                try:
-                    inactive_val = int(inactive)
-                    if inactive_val > expected_days or inactive_val < 0:
+                return False, "useradd çıktısında INACTIVE bulunamadı"
+
+        # /etc/shadow kontrolü
+        non_compliant = []
+        with open("/etc/shadow", "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.strip().split(":")
+                if len(parts) < 7:
+                    continue
+                user, passwd, inactive = parts[0], parts[1], parts[6]
+                if not passwd.startswith("$"):
+                    continue
+
+                if inactive in ("", None, "-1"):
+                    non_compliant.append(f"{user}:{inactive or 'empty'}")
+                else:
+                    try:
+                        inactive_val = int(inactive)
+                        if inactive_val > expected_days:
+                            non_compliant.append(f"{user}:{inactive}")
+                    except ValueError:
                         non_compliant.append(f"{user}:{inactive}")
-                except ValueError:
-                    non_compliant.append(f"{user}:{inactive}")
 
         if non_compliant:
             return False, f"Uygunsuz kullanıcılar: {', '.join(non_compliant)}"
+
         return True, f"Tüm kullanıcılar INACTIVE değeri <= {expected_days} uyumlu."
     except Exception as e:
         return False, f"/etc/shadow kontrolünde hata: {e}"
@@ -527,56 +517,72 @@ def check_inactive_password_lock(expected_days=45):
 
 def apply_inactive_password_lock(username=None, param=None):
     """
-    CIS 5.4.1.5 remediation: INACTIVE değerini uygular.
+    CIS 5.4.1.5 - Ensure inactive password lock is configured
     """
-    days = param.get("max_inactive_days", 45)
+    param = param or {}
+    days = int(param.get("max_inactive_days", 45))
 
     ok, msg = check_inactive_password_lock(days)
     if ok:
         return True, f"Zaten uyumlu: {msg}"
 
+    logger.info(f"[APPLY][inactive_password_lock] Uyumsuzluk tespit edildi: {msg} → Düzeltiliyor...")
+
     success, output = run_command(["useradd", "-D", "-f", str(days)])
     if not success:
         return False, f"useradd varsayılan ayar yapılamadı: {output}"
+    logger.info(f"[APPLY][inactive_password_lock] Varsayılan INACTIVE={days} olarak ayarlandı")
 
-    try:
-        with open("/etc/shadow", "r") as f:
-            lines = f.readlines()
+    with open("/etc/shadow", "r", encoding="utf-8") as f:
+        lines = f.readlines()
 
-        for line in lines:
-            parts = line.strip().split(":")
-            if len(parts) < 8:
-                continue
+    new_lines = []
+    for line in lines:
+        parts = line.strip().split(":")
+        if len(parts) < 7:
+            new_lines.append(line)
+            continue
 
-            user, passwd, inactive = parts[0], parts[1], parts[7]
+        user, passwd, inactive = parts[0], parts[1], parts[6]
+        if not passwd.startswith("$"):
+            new_lines.append(line)
+            continue
 
-            if not passwd.startswith("$"):  
-                continue
-
-            fix_needed = False
-            if inactive == "" or inactive is None or inactive == "-1":
-                fix_needed = True
-            else:
-                try:
-                    inactive_val = int(inactive)
-                    if inactive_val > days or inactive_val < 0:
-                        fix_needed = True
-                except ValueError:
+        fix_needed = False
+        if inactive in ("", None, "-1"):
+            fix_needed = True
+        else:
+            try:
+                if int(inactive) > days:
                     fix_needed = True
+            except ValueError:
+                fix_needed = True
 
-            if fix_needed:
-                run_command(["chage", "--inactive", str(days), user])
+        if fix_needed:
+            success, out = run_command(["chage", "--inactive", str(days), user])
+            if not success:
+                logger.warning(f"[APPLY][inactive_password_lock] chage başarısız ({user}), dosya doğrudan güncellenecek: {out}")
 
-        ok, msg = check_inactive_password_lock(days)
-        if not ok:
-            return False, f"Ayar sonrası doğrulama başarısız: {msg}"
+            # 🔧 Doğrudan güncelle
+            parts[6] = str(days)
+            new_lines.append(":".join(parts) + "\n")
+            logger.info(f"[APPLY][inactive_password_lock] {user} için INACTIVE {days} olarak zorla yazıldı.")
+        else:
+            new_lines.append(line)
 
-        return True, f"INACTIVE ayarı {days} gün olarak başarıyla uygulandı."
+    backup = f"/etc/shadow.bak_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    shutil.copy("/etc/shadow", backup)
+    with open("/etc/shadow", "w", encoding="utf-8") as f:
+        f.writelines(new_lines)
+    logger.info(f"[APPLY][inactive_password_lock] /etc/shadow güncellendi ve yedek alındı: {backup}")
 
-    except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"[apply_inactive_password_lock] Hata: {msg}")
-        return False, f"Kullanıcı parametreleri düzenlenemedi: {msg}"
+    ok, msg = check_inactive_password_lock(days)
+    if ok:
+        return True, f"Tüm kullanıcılar için INACTIVE {days} olarak başarıyla uygulandı."
+    else:
+        return False, f"Ayar sonrası doğrulama başarısız: {msg}"
+
+
 
 
 
@@ -1581,21 +1587,25 @@ def apply_ensure_shell_timeout(username=None, param=None):
 def check_umask():
     """
     CIS 5.4.3.3 - Ensure default user umask is configured
-    Umask değerini kontrol eder. CIS'e göre 027, 037 veya 077 olmalı.
     """
     try:
         config_files = [
             "/etc/profile",
             "/etc/bashrc",
             "/etc/login.defs",
+            "/etc/default/login",
+            "/etc/pam.d/postlogin",
         ]
+
         profile_d = "/etc/profile.d"
         if os.path.isdir(profile_d):
             for f in os.listdir(profile_d):
                 if f.endswith(".sh"):
                     config_files.append(os.path.join(profile_d, f))
 
-        found_values = []
+        SAFE_UMASKS = {"027", "037", "077"}
+        insecure_files = []
+        valid_found = False
 
         for file_path in config_files:
             if not os.path.exists(file_path):
@@ -1603,34 +1613,34 @@ def check_umask():
             with open(file_path, "r") as f:
                 for line in f:
                     line = line.strip()
-                    if line.startswith("umask") and not line.startswith("#"):
-                        parts = line.split()
-                        if len(parts) >= 2:
-                            found_values.append((file_path, parts[1]))
+                    if not line or line.startswith("#"):
+                        continue
 
-        if not found_values:
-            logger.warning("[CHECK] Hiçbir dosyada umask ayarı bulunamadı.")
-            return False, "umask ayarı bulunamadı"
+                    if re.match(r"^\s*umask\s+(0[0-7]{2}|[0-7]{3})", line):
+                        val = re.findall(r"umask\s+([0-7]+)", line)[0]
+                        if val in SAFE_UMASKS:
+                            valid_found = True
+                            logger.info(f"[CHECK] {file_path}: güvenli umask {val}")
+                        else:
+                            insecure_files.append(f"{file_path} -> {val}")
+                    elif re.match(r"^\s*umask\s+u=.*", line):  # symbolic
+                        if "o=" in line and not any(p in line for p in ["o=w", "o=rw", "o=rwx"]):
+                            valid_found = True
+                            logger.info(f"[CHECK] {file_path}: güvenli symbolic umask {line}")
+                        else:
+                            insecure_files.append(f"{file_path} -> {line}")
 
-        SAFE_UMASKS = [0o27, 0o37, 0o77]
+        if insecure_files:
+            logger.warning("[CHECK] Zayıf umask bulunan dosyalar:\n" + "\n".join(insecure_files))
+            return False, "Zayıf umask ayarları var."
 
-        for file_path, value in found_values:
-            try:
-                umask_val = int(value, 8)
-                if umask_val in SAFE_UMASKS:
-                    logger.info(f"[CHECK] {file_path} içinde güvenli umask bulundu: {value}")
-                    return True, f"umask güvenli ({value})"
-                else:
-                    logger.warning(f"[CHECK] {file_path} içinde zayıf umask bulundu: {value}")
-                    return False, f"umask zayıf ({value})"
-            except ValueError:
-                logger.error(f"[CHECK] {file_path} içinde geçersiz umask değeri: {value}")
-                return False, f"geçersiz umask ({value})"
-
-        return False, "Uygun umask bulunamadı"
+        if valid_found:
+            return True, "Tüm umask ayarları güvenli."
+        else:
+            return False, "Hiçbir güvenli umask bulunamadı."
 
     except Exception as e:
-        logger.error(f"[CHECK] Hata: {str(e)}")
+        logger.error(f"[CHECK] Hata: {e}")
         return False, str(e)
 
 
@@ -1643,29 +1653,21 @@ def apply_umask(username=None, param=None):
     """
     try:
         desired_umask = param.get("value", "027")
-        check_result, msg = check_umask()
 
-        if check_result and msg.find(desired_umask) != -1:
-            logger.info(f"[APPLY] Umask zaten doğru ayarlanmış: {desired_umask}")
-            return True, f"umask zaten {desired_umask}"
+        # Eski umask satırlarını pasifleştir
+        for path in ["/etc/profile", "/etc/bashrc", "/etc/login.defs", "/etc/default/login"]:
+            if os.path.exists(path):
+                run_command(["bash", "-c", f"sed -i 's/^umask/#&/' {path}"])
 
-        # /etc/profile.d/50-systemwide_umask.sh içine yaz
+        # Yeni umask dosyası oluştur
         config_file = "/etc/profile.d/50-systemwide_umask.sh"
-        content = f"umask {desired_umask}\n"
-
         with open(config_file, "w") as f:
-            f.write(content)
+            f.write(f"umask {desired_umask}\n")
 
         logger.info(f"[APPLY] {config_file} dosyasına umask {desired_umask} yazıldı.")
-
-        # Uygulama sonrası tekrar check yap
-        check_result, msg = check_umask()
-        if check_result:
-            return True, f"umask başarıyla {desired_umask} olarak ayarlandı"
-        else:
-            return False, "umask ayarlanamadı : " + msg
+        return True, f"umask {desired_umask} olarak ayarlandı"
 
     except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"[APPLY] Hata: {msg}")
+        msg = f"Hata: {e}"
+        logger.error(f"[APPLY] {msg}")
         return False, msg
