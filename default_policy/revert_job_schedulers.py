@@ -19,10 +19,10 @@ from policies.job_schedulers import (
 def revert_cron_service_policy():
     """
     CIS 2.4.1.1: Revert - Ensure cron daemon is enabled and active
-    Bu fonksiyon cron (veya crond) servisinin aktifliğini geri alır (disable + stop).
+    Bu fonksiyon cron (veya crond) servisinin aktifliğini geri alır (stop + disable + mask).
     """
     try:
-        # Hangi servis kullanılıyor?
+        # Cron servis adını tespit et
         success, output = run_command(["systemctl", "list-unit-files"])
         if not success:
             logger.error(f"[2.4.1.1][REVERT] Servis listesi alınamadı: {output}")
@@ -35,24 +35,31 @@ def revert_cron_service_policy():
                 break
 
         if not service_name:
-            logger.warning("[2.4.1.1][REVERT] Cron servisi sistemde kurulu değil, yapılacak işlem yok.")
+            logger.info("[2.4.1.1][REVERT] Cron servisi sistemde kurulu değil, revert gereksiz.")
             return True, "Cron servisi sistemde kurulu değil, revert gerekli değil."
 
-        # Servisi kapat ve disable yap
+        # Servisi kapat ve disable + mask yap
         run_command(["systemctl", "stop", service_name])
         run_command(["systemctl", "disable", service_name])
         run_command(["systemctl", "mask", service_name])
 
-        # Son durumu kontrol et
+        # Durumu kontrol et
         success1, enabled_status = run_command(["systemctl", "is-enabled", service_name])
         success2, active_status = run_command(["systemctl", "is-active", service_name])
 
-        if enabled_status.strip() in ["disabled", "masked"] and active_status.strip() == "inactive":
+        enabled_status = enabled_status.strip().lower()
+        active_status = active_status.strip().lower()
+
+        # Kabul edilebilir varyasyonları hesaba kat
+        enabled_ok = any(s in enabled_status for s in ["disabled", "masked", "not-found", "no such file"])
+        active_ok = any(s in active_status for s in ["inactive", "dead", "failed", "could not be found"])
+
+        if enabled_ok and active_ok:
             logger.info(f"[2.4.1.1][REVERT] {service_name} başarıyla devre dışı bırakıldı (enabled={enabled_status}, active={active_status})")
             return True, f"{service_name} başarıyla devre dışı bırakıldı."
         else:
             logger.warning(f"[2.4.1.1][REVERT] {service_name} beklenen revert durumunda değil (enabled={enabled_status}, active={active_status})")
-            return False, f"{service_name} beklenen revert durumunda değil."
+            return False, f"{service_name} beklenen revert durumunda değil (enabled={enabled_status}, active={active_status})."
 
     except Exception as e:
         msg = f"Hata: {str(e)}"

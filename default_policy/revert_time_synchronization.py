@@ -14,7 +14,7 @@ def revert_timesyncd_service():
     """
     Revert - CIS 2.3.1.1
     Debian/Pardus varsayılanı olan chrony yeniden etkinleştirilir.
-    systemd-timesyncd devre dışı bırakılır.
+    systemd-timesyncd devre dışı bırakılır ve maskelenir.
     """
     try:
         logger.info("[CIS 2.3.1.1][REVERT] timesyncd politikası geri alınıyor...")
@@ -22,14 +22,15 @@ def revert_timesyncd_service():
         # systemd-timesyncd devre dışı bırak
         run_command(["systemctl", "stop", "systemd-timesyncd.service"])
         run_command(["systemctl", "disable", "systemd-timesyncd.service"])
+        run_command(["systemctl", "mask", "systemd-timesyncd.service"])
         logger.info("[CIS 2.3.1.1][REVERT] systemd-timesyncd devre dışı bırakıldı.")
 
         # chrony paketi kurulu mu?
         success_chrony, output_chrony = run_command(["dpkg", "-s", "chrony"])
         if not success_chrony or "install ok installed" not in output_chrony:
             logger.info("[CIS 2.3.1.1][REVERT] Chrony paketi bulunamadı, kuruluyor...")
-            run_command(["apt-get", "update"])
-            run_command(["apt-get", "-y", "install", "chrony"])
+            run_command(["apt-get", "-y", "-qq", "update"])
+            run_command(["apt-get", "-y", "-qq", "install", "chrony"])
             logger.info("[CIS 2.3.1.1][REVERT] Chrony paketi kuruldu.")
 
         # chrony servisini etkinleştir
@@ -42,30 +43,40 @@ def revert_timesyncd_service():
         logger.error(f"[CIS 2.3.1.1][REVERT] Politika geri alma hatası: {msg}")
         return False, f"Politika geri alma hatası: {msg}"
 
+TIMESYNCD_CONF = "/etc/systemd/timesyncd.conf"
+TIMESYNCD_CONF_DIR = "/etc/systemd/timesyncd.conf.d"
+DROPIN_FILE = os.path.join(TIMESYNCD_CONF_DIR, "60-timesyncd.conf")
+
 def revert_systemd_timesyncd_authorized_timeserver():
     """
     Revert - CIS 2.3.2.1
     systemd-timesyncd yetkili zaman sunucusu ayarlarını geri alır.
     (apply sırasında oluşturulan drop-in dosyası silinir)
     """
-    TIMESYNCD_CONF = "/etc/systemd/timesyncd.conf"
-    TIMESYNCD_CONF_DIR = "/etc/systemd/timesyncd.conf.d"
-    DROPIN_FILE = os.path.join(TIMESYNCD_CONF_DIR, "60-timesyncd.conf")
     try:
+        logger.info("[CIS 2.3.2.1][REVERT] systemd-timesyncd zaman sunucusu yapılandırması geri alınıyor...")
+
         if os.path.exists(DROPIN_FILE):
             os.remove(DROPIN_FILE)
             logger.info(f"[CIS 2.3.2.1][REVERT] Drop-in dosyası silindi: {DROPIN_FILE}")
-            
-            # Klasör boşsa temizleyelim
-            if os.path.isdir(TIMESYNCD_CONF_DIR) and not os.listdir(TIMESYNCD_CONF_DIR):
+        else:
+            logger.info("[CIS 2.3.2.1][REVERT] Drop-in dosyası mevcut değil, işlem atlandı.")
+
+        # Dizini silmeye çalış (boşsa)
+        try:
+            if os.path.isdir(TIMESYNCD_CONF_DIR):
                 os.rmdir(TIMESYNCD_CONF_DIR)
                 logger.info(f"[CIS 2.3.2.1][REVERT] Boş dizin silindi: {TIMESYNCD_CONF_DIR}")
-        else:
-            logger.info("[CIS 2.3.2.1][REVERT] Drop-in dosyası zaten mevcut değil, yapılacak bir şey yok.")
+        except OSError:
+            logger.debug(f"[CIS 2.3.2.1][REVERT] {TIMESYNCD_CONF_DIR} dizini boş değil, silinmedi.")
 
         # Servisi yeniden yükle
         run_command(["systemctl", "reload-or-restart", "systemd-timesyncd.service"])
         logger.info("[CIS 2.3.2.1][REVERT] systemd-timesyncd varsayılan ayarlarına döndü.")
+
+        success, out = run_command(["timedatectl", "show-timesync", "--all"])
+        if success:
+            logger.debug(f"[CIS 2.3.2.1][REVERT] Güncel zaman senkronizasyon durumu:\n{out}")
 
         return True, "systemd-timesyncd yetkili zaman sunucusu ayarları geri alındı."
     except Exception as e:
@@ -77,14 +88,17 @@ def revert_timesyncd_service_enabled():
     """
     Revert - CIS 2.3.2.2
     systemd-timesyncd.service'in enable + active durumunu geri alır.
-    (Servisi durdurur ve disable eder. Eğer servis yoksa zaten revert edilmiş sayılır.)
+    (Servisi durdurur, disable eder ve mask'ler. Eğer servis yoksa zaten revert edilmiş sayılır.)
     """
     try:
         logger.info("[CIS 2.3.2.2][REVERT] systemd-timesyncd servisi durduruluyor...")
         run_command(["systemctl", "stop", "systemd-timesyncd.service"])
 
-        logger.info("[CIS 2.3.2.2][REVERT] systemd-timesyncd servisi disable edilmeye çalışılıyor...")
+        logger.info("[CIS 2.3.2.2][REVERT] systemd-timesyncd servisi disable ediliyor...")
         run_command(["systemctl", "disable", "systemd-timesyncd.service"])
+
+        logger.info("[CIS 2.3.2.2][REVERT] systemd-timesyncd servisi mask ediliyor...")
+        run_command(["systemctl", "mask", "systemd-timesyncd.service"])
 
         # Durum kontrolü
         success_active, active_status = run_command(
@@ -94,24 +108,24 @@ def revert_timesyncd_service_enabled():
             ["systemctl", "is-enabled", "systemd-timesyncd.service"]
         )
 
+        active_status = active_status.strip().lower()
+        enabled_status = enabled_status.strip().lower()
+
         # Aktiflik kontrolü
-        if success_active and active_status.strip() != "active":
-            active_ok = True
-        elif not success_active and "could not be found" in active_status.lower():
-            active_ok = True
-        else:
-            active_ok = False
+        active_ok = ("inactive" in active_status or
+                     "failed" in active_status or
+                     "dead" in active_status or
+                     "could not be found" in active_status)
 
         # Enable durumu kontrolü
-        if success_enabled and enabled_status.strip() == "disabled":
-            enabled_ok = True
-        elif not success_enabled and ("no such file" in enabled_status.lower() or "not-found" in enabled_status.lower()):
-            enabled_ok = True
-        else:
-            enabled_ok = False
+        enabled_ok = ("disabled" in enabled_status or
+                      "masked" in enabled_status or
+                      "static" in enabled_status or
+                      "not-found" in enabled_status or
+                      "no such file" in enabled_status)
 
         if active_ok and enabled_ok:
-            logger.info("[CIS 2.3.2.2][REVERT] systemd-timesyncd başarıyla revert edildi (inactive + disabled veya mevcut değil).")
+            logger.info("[CIS 2.3.2.2][REVERT] systemd-timesyncd başarıyla revert edildi (inactive + disabled/masked).")
             return True, "systemd-timesyncd başarıyla revert edildi."
         else:
             logger.warning(f"[CIS 2.3.2.2][REVERT] Beklenen durum sağlanamadı (enabled={enabled_status}, active={active_status})")
@@ -179,15 +193,15 @@ def revert_chrony_running_as_chrony():
             with open(chrony_conf, "w") as f:
                 f.writelines(new_lines)
 
-            success, output = run_command(["systemctl", "restart", "chrony"])
+            success, output = run_command(["systemctl", "restart", "chronyd"])
             if not success:
-                logger.error(f"[CIS 2.3.3.2][REVERT] chrony restart başarısız: {output}")
-                return False, f"chrony restart başarısız: {output}"
+                logger.error(f"[CIS 2.3.3.2][REVERT] chronyd restart başarısız: {output}")
+                return False, f"chronyd restart başarısız: {output}"
 
-            logger.info("[CIS 2.3.3.2][REVERT] Değişiklikler geri alındı ve chrony yeniden başlatıldı.")
+            logger.info("[CIS 2.3.3.2][REVERT] Değişiklikler geri alındı ve chronyd yeniden başlatıldı.")
             return True, "Değişiklikler geri alındı."
         else:
-            logger.warning("[CIS 2.3.3.2][REVERT] 'user _chrony' satırı zaten yoktu, değişiklik yapılmadı.")
+            logger.info("[CIS 2.3.3.2][REVERT] 'user _chrony' satırı zaten yoktu, değişiklik yapılmadı.")
             return True, "'user _chrony' satırı zaten yoktu."
 
     except Exception as e:
@@ -199,9 +213,9 @@ def revert_chrony_running_as_chrony():
 def revert_timesync_service():
     """
     CIS 2.3.3.3 - Revert: Ensure a time synchronization service is enabled and running
-    Yapılan değişiklikleri geri alır:
-        - Etkinleştirilmiş ve çalışan servisleri durdurur ve disable eder.
-        - Eğer systemd-timesyncd ise unmask yerine mask yapılır.
+    Geri alma işlemi:
+        - Etkin (active+enabled) tek servisi durdurur ve disable eder.
+        - Eğer systemd-timesyncd ise ayrıca mask uygulanır.
     """
     services = {
         "chrony": "chrony.service",
@@ -210,27 +224,35 @@ def revert_timesync_service():
     }
 
     try:
-        reverted = False
+        active_service = None
+
+        # Önce hangisi aktifse onu bul
         for name, unit in services.items():
             ok1, out1 = run_command(["systemctl", "is-enabled", unit])
             ok2, out2 = run_command(["systemctl", "is-active", unit])
 
-            if out1.strip() == "enabled" or out2.strip() == "active":
+            if out1.strip() == "enabled" and out2.strip() == "active":
+                active_service = (name, unit)
+                break
 
-                run_command(["systemctl", "stop", unit])
-                run_command(["systemctl", "disable", unit])
+        if not active_service:
+            logger.info("[CIS 2.3.3.3][REVERT] Etkin zaman senkronizasyon servisi bulunamadı.")
+            return True, "Zaten aktif bir servis yok."
 
-                if name == "systemd-timesyncd":
-                    run_command(["systemctl", "mask", unit])
+        name, unit = active_service
+        logger.info(f"[CIS 2.3.3.3][REVERT] Aktif servis bulundu: {name} ({unit})")
 
-                reverted = True
+        # Servisi durdur ve disable et
+        run_command(["systemctl", "stop", unit])
+        run_command(["systemctl", "disable", unit])
 
-        if reverted:
-            logger.info("[CIS 2.3.3.3][REVERT] Etkin servis(ler) devre dışı bırakıldı.")
-            return True, "Etkin servis(ler) devre dışı bırakıldı."
-        else:
-            logger.warning("[CIS 2.3.3.3][REVERT] Zaten etkin bir servis bulunamadı.")
-            return True, "Zaten etkin bir servis bulunamadı."
+        # Sadece systemd-timesyncd için mask uygula
+        if name == "systemd-timesyncd":
+            run_command(["systemctl", "mask", unit])
+            logger.info("[CIS 2.3.3.3][REVERT] systemd-timesyncd mask'lendi.")
+
+        logger.info(f"[CIS 2.3.3.3][REVERT] {name} servisi başarıyla devre dışı bırakıldı.")
+        return True, f"{name} servisi devre dışı bırakıldı."
 
     except Exception as e:
         logger.error(f"[CIS 2.3.3.3][REVERT] Hata: {str(e)}")

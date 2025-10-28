@@ -379,7 +379,7 @@ def apply_cron_monthly_permissions(username=None, param=None):
             return True, check_msg
 
         run_command(["chown", "root:root", "/etc/cron.monthly/"])
-        run_command(["chmod", "og-rwx", "/etc/cron.monthly/"])
+        run_command(["chmod", "700", "/etc/cron.monthly/"])
 
         check_ok, check_msg = check_cron_monthly_permissions()
         if check_ok:
@@ -476,7 +476,7 @@ def check_crontab_restriction():
             parts = output.replace("Access:", "").replace("Owner:", "").replace("Group:", "").split()
             perms, owner, group = parts[0].strip("()"), parts[1].strip("()"), parts[2].strip("()")
 
-            if int(perms) > 640:
+            if int(perms, 8) > int("640", 8):
                 return False, f"/etc/cron.deny izinleri çok gevşek ({perms}), beklenen 640 veya daha kısıtlı."
             if owner != "root":
                 return False, f"/etc/cron.deny owner {owner}, beklenen root."
