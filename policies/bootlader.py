@@ -26,8 +26,6 @@ def enforce_bootloader_password(username, parameters):
 
         # grub.cfg içinde parola ayarlanmış mı diye kontrol et
         if "password_pbkdf2" in content and "set superusers" in content:
-            # Not: Bu basit kontrol, parolanın doğru kullanıcıya ait olduğunu garanti etmez
-            # ama en azından bir parolanın varlığını teyit eder.
             return True, "GRUB parolası zaten ayarlanmış görünüyor."
         else:
             return apply_bootloader_password(parameters)
@@ -73,6 +71,17 @@ EOF
         success, output = run_command(['sudo', 'chmod', '+x', auth_file_path])
         if not success:
             return False, f"Yetkilendirme dosyası çalıştırılabilir yapılamadı: {output}"
+        
+        linux_config_path = "/etc/grub.d/10_linux"
+        sed_cmd = [
+            'sudo', 'sed', '-i',
+            '/CLASS=.*--unrestricted.*/!s/CLASS="\\(.*\\)"/CLASS="\\1 --unrestricted"/',
+            linux_config_path
+        ]
+        print(f"GRUB: {linux_config_path} dosyasına --unrestricted bayrağı ekleniyor...")
+        success, output = run_command(sed_cmd)
+        if not success:
+            return False, f"--unrestricted bayrağı {linux_config_path} dosyasına eklenirken hata: {output}"
         # GRUB'u güncelle
         success, output = run_command(['sudo', 'update-grub'])
         if not success:

@@ -21,7 +21,7 @@ def check_restrict_sudo_commands(username, parameters):
     if not commands:
         return False, "Parametrelerde 'commands' listesi boş olamaz."
         
-    config_file_path = f"/etc/sudoers.d/pmys-{username}-restricted"
+    config_file_path = f"/etc/sudoers.d/{username}-restricted"
     commands_str = ", ".join(commands)
     expected_content = f"{username} ALL=(ALL) {commands_str}"
 
@@ -48,7 +48,7 @@ def apply_restrict_sudo_commands(username, parameters):
         commands = commands_param
     # --- DÜZELTME BİTTİ ---
 
-    config_file_path = f"/etc/sudoers.d/pmys-{username}-restricted"
+    config_file_path = f"/etc/sudoers.d/{username}-restricted"
     commands_str = ", ".join(commands)
     content = f"{username} ALL=(ALL) {commands_str}"
 
@@ -89,7 +89,7 @@ def check_nopasswd_sudo_commands(username, parameters):
     if not commands:
         return False, "Parametrelerde 'commands' listesi boş olamaz."
         
-    config_file_path = f"/etc/sudoers.d/pmys-{username}-nopasswd"
+    config_file_path = f"/etc/sudoers.d/{username}-nopasswd"
     commands_str = ", ".join(commands)
     expected_content = f"{username} ALL=(ALL) NOPASSWD: {commands_str}"
 
@@ -116,7 +116,7 @@ def apply_nopasswd_sudo_commands(username, parameters):
         commands = commands_param
     # --- DÜZELTME BİTTİ ---
     
-    config_file_path = f"/etc/sudoers.d/pmys-{username}-nopasswd"
+    config_file_path = f"/etc/sudoers.d/{username}-nopasswd"
     commands_str = ", ".join(commands)
     content = f"{username} ALL=(ALL) NOPASSWD: {commands_str}"
 
@@ -146,7 +146,7 @@ def apply_nopasswd_sudo_commands(username, parameters):
 # Kullanıcı Yönetim Yetkisi Policies
 #---------------------------------------------------------------------------
 def check_user_management_privileges(username, parameters):
-    config_file_path = f"/etc/sudoers.d/pmys-{username}-usermgmt"
+    config_file_path = f"/etc/sudoers.d/{username}-usermgmt"
     # Bu politikada komutlar sabittir.
     commands = ["/usr/sbin/adduser", "/usr/sbin/deluser"]
     commands_str = ", ".join(commands)
@@ -168,7 +168,7 @@ def check_user_management_privileges(username, parameters):
 
 
 def apply_user_management_privileges(username, parameters):
-    config_file_path = f"/etc/sudoers.d/pmys-{username}-usermgmt"
+    config_file_path = f"/etc/sudoers.d/{username}-usermgmt"
     commands = ["/usr/sbin/adduser", "/usr/sbin/deluser"]
     commands_str = ", ".join(commands)
     content = f"{username} ALL=(ALL) {commands_str}"
@@ -203,7 +203,7 @@ def check_sudo_logfile_config(username, parameters):
     /etc/sudoers.d/ altında sudo loglaması için yapılandırma dosyasının
     varlığını ve doğruluğunu kontrol eder.
     """
-    config_file_path = "/etc/sudoers.d/01-pmys-sudo-logging"
+    config_file_path = "/etc/sudoers.d/01-sudo-logging"
     expected_content = 'Defaults    logfile="/var/log/sudo.log"'
 
     if not os.path.exists(config_file_path):
@@ -233,7 +233,7 @@ def apply_sudo_logfile_config(username, parameters):
     Sudo loglama kuralını güvenli bir şekilde oluşturur, visudo ile kontrol eder,
     yerine taşır ve log dosyasının kendisini oluşturur.
     """
-    config_file_path = "/etc/sudoers.d/01-pmys-sudo-logging"
+    config_file_path = "/etc/sudoers.d/01-sudo-logging"
     content = 'Defaults    logfile="/var/log/sudo.log"'
     log_file = "/var/log/sudo.log"
 

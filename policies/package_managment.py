@@ -1,99 +1,203 @@
+import json
 import os
 import subprocess
 from datetime import datetime
 from utils import get_logged_in_user, get_desktop_env, run_command
+import re
 
 
 
 # ==============================================================================
 # == PAKET YÖNETİCİSİ (APT) YAPILANDIRMA POLİTİKASI ============================
 # ==============================================================================
+def _normalize_content_to_set(content_str, line_separator=';'):
+    """
+    Bir depo içeriği string'ini alır, yorumları ve boş satırları atar,
+    karşılaştırma için bir 'set' (küme) döndürür.
+    """
+    # Sunucudan geliyorsa ';' (varsayılan), dosyadan okunuyorsa '\n' kullan
+    if line_separator == ';':
+        content = content_str.replace(line_separator, '\n')
+    else:
+        content = content_str
+        
+    lines = {
+        line.strip() 
+        for line in content.splitlines() 
+        if line.strip() and not line.strip().startswith('#')
+    }
+    return lines
+
 def check_secure_apt_repositories(username, parameters):
     """
-    /etc/apt/sources.list dosyasının içeriğini, sunucudan gelen
-    standart içerikle karşılaştırır. Farklıysa, apply fonksiyonunu çağırır.
+    CIS 1.2.1.2 Politikasını tam olarak denetler.
+    Hem /etc/apt/sources.list dosyasını hem de /etc/apt/sources.list.d/
+    dizinindeki TÜM dosyaları, sunucudaki "beyaz liste" (allow-list) ile karşılaştırır.
     """
-    expected_content_from_server = parameters.get("repo_content", "")
-    if not expected_content_from_server:
-        return False, "Politika hatası: 'repo_content' parametresi belirtilmemiş."
+    SOURCES_LIST_PATH = "/etc/apt/sources.list"
+    SOURCES_DIR_PATH = "/etc/apt/sources.list.d"
 
-    # ';' karakterini gerçek yeni satıra ('\n') çevirerek doğru formatı oluştur
-    expected_content = expected_content_from_server.replace(';', '\n')
-    sources_path = "/etc/apt/sources.list"
-    
     try:
-        if not os.path.exists(sources_path):
-            return apply_secure_apt_repositories(parameters)
+        # 1. Sunucu parametrelerini al ve işle
+        main_content_str = parameters.get("main_repo_content")
+        sources_d_json = parameters.get("sources_d_files_json")
 
-        with open(sources_path, "r") as f:
-            current_content = f.read()
+        if not main_content_str or sources_d_json is None: # sources_d_files_json boş bir JSON olabilir ('{}'), ama None olamaz.
+            return False, "Politika hatası: 'main_repo_content' veya 'sources_d_files_json' parametreleri eksik."
 
-        current_repos = {line.strip() for line in current_content.splitlines() if line.strip() and not line.strip().startswith('#')}
-        expected_repos = {line.strip() for line in expected_content.splitlines() if line.strip() and not line.strip().startswith('#')}
+        # Beklenen (onaylı) içeriği parse et
+        expected_main_lines = _normalize_content_to_set(main_content_str, line_separator=';')
+        
+        try:
+            # Sunucudan gelen JSON string'ini Python sözlüğüne (dictionary) çevir
+            expected_sources_d = json.loads(sources_d_json)
+        except json.JSONDecodeError:
+            return False, f"Politika hatası: 'sources_d_files_json' geçerli bir JSON formatında değil."
 
-        if current_repos == expected_repos:
-            return True, "Paket yöneticisi (apt) depoları zaten standartlara uygun."
-        else:
-            return apply_secure_apt_repositories(parameters)
+        # 2. Ana sources.list dosyasını kontrol et
+        if not os.path.exists(SOURCES_LIST_PATH):
+             print(f"Denetim: {SOURCES_LIST_PATH} dosyası eksik. Düzeltme uygulanacak.")
+             return apply_secure_apt_repositories(username, parameters) # 'username' argümanını da yolla
+
+        with open(SOURCES_LIST_PATH, "r") as f:
+            current_main_content = f.read()
+        
+        current_main_lines = _normalize_content_to_set(current_main_content, line_separator='\n')
+
+        if current_main_lines != expected_main_lines:
+            print(f"Denetim: {SOURCES_LIST_PATH} içeriği farklı. Düzeltme uygulanacak.")
+            return apply_secure_apt_repositories(username, parameters)
+
+        # 3. sources.list.d dizinini kontrol et
+        if not os.path.isdir(SOURCES_DIR_PATH):
+             os.makedirs(SOURCES_DIR_PATH) 
+             
+        expected_filenames = set(expected_sources_d.keys())
+        
+        # Sadece .list ve .sources dosyalarını dikkate al 
+        current_filenames = set(f for f in os.listdir(SOURCES_DIR_PATH) if f.endswith(('.list', '.sources')))
+        
+        if current_filenames != expected_filenames:
+            print(f"Denetim: sources.list.d dizinindeki dosya listesi eşleşmiyor. Düzeltme uygulanacak.")
+            print(f" - Beklenen: {expected_filenames}")
+            print(f" - Mevcut: {current_filenames}")
+            return apply_secure_apt_repositories(username, parameters)
+
+        # Dosya listesi eşleşiyorsa, içerikleri kontrol et
+        for filename in expected_filenames:
+            file_path = os.path.join(SOURCES_DIR_PATH, filename)
+            with open(file_path, "r") as f:
+                current_file_content = f.read()
+            
+            current_file_lines = _normalize_content_to_set(current_file_content, line_separator='\n')
+            expected_file_lines = _normalize_content_to_set(expected_sources_d[filename], line_separator=';')
+            
+            if current_file_lines != expected_file_lines:
+                print(f"Denetim: {file_path} dosyasının içeriği farklı. Düzeltme uygulanacak.")
+                return apply_secure_apt_repositories(username, parameters)
+
+        return True, "Tüm APT depoları (sources.list ve sources.list.d) standartlara uygun."
+
     except Exception as e:
-        return False, f"APT depo kontrolünde hata: {e}"
+        return False, f"APT depo denetiminde genel hata: {e}"
 
-def apply_secure_apt_repositories(parameters):
+def apply_secure_apt_repositories(username, parameters):
     """
-    /etc/apt/sources.list dosyasını, parametre olarak verilen standart içerikle
-    güvenli bir şekilde değiştirir ve 'apt update' komutunu çalıştırır.
+    /etc/apt/sources.list dosyasını ve /etc/apt/sources.list.d/ dizinini,
+    sunucudan gelen "beyaz liste" (allow-list) ile tam olarak eşleşecek şekilde
+    güvenli bir şekilde yeniden yapılandırır.
     """
-    expected_content_from_server = parameters.get("repo_content", "")
-    if not expected_content_from_server:
-        return False, "Politika hatası: 'repo_content' parametresi boş olamaz."
-
-    sources_path = "/etc/apt/sources.list"
-    temp_path = "/tmp/sources.list.new"
+    SOURCES_LIST_PATH = "/etc/apt/sources.list"
+    SOURCES_DIR_PATH = "/etc/apt/sources.list.d"
     
     try:
-        # --- TEK VE BASİT DÖNÜŞÜM ---
-        # Gelen metindeki ';' karakterini gerçek yeni satır '\n' ile değiştiriyoruz.
-        content_to_write = expected_content_from_server.replace(';', '\n')
+        # 1. Sunucu parametrelerini al ve işle
+        main_content_str = parameters.get("main_repo_content")
+        sources_d_json = parameters.get("sources_d_files_json")
+
+        if not main_content_str or sources_d_json is None:
+            return False, "Politika hatası: 'main_repo_content' veya 'sources_d_files_json' parametreleri eksik."
+
+        expected_main_content = main_content_str.replace(';', '\n')
+        
+        try:
+            expected_sources_d = json.loads(sources_d_json)
+        except json.JSONDecodeError:
+            return False, f"Politika hatası: 'sources_d_files_json' geçerli bir JSON formatında değil."
+
+        # 2. Ana sources.list dosyasını uygula
+        temp_path_main = "/tmp/sources.list.new"
         
         # Yedekleme
-        if os.path.exists(sources_path):
+        if os.path.exists(SOURCES_LIST_PATH):
             backup_path = f"/etc/apt/sources.list.bak_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-            success, output = run_command(['sudo', 'cp', sources_path, backup_path])
+            success, output = run_command(['sudo', 'cp', SOURCES_LIST_PATH, backup_path])
             if not success:
-                return False, f"Yedek dosya oluşturulurken hata: {output}."
-
-        # Dosyayı doğru formatla yaz
-        with open(temp_path, "w") as f:
-            f.write(content_to_write)
-            if not content_to_write.endswith('\n'):
+                return False, f"Yedek dosya ({SOURCES_LIST_PATH}) oluşturulurken hata: {output}."
+        
+        # Yeni dosyayı yaz
+        with open(temp_path_main, "w") as f:
+            f.write(expected_main_content)
+            if not expected_main_content.endswith('\n'):
                 f.write('\n')
-
-        # Dosyayı taşı
-        success, output = run_command(['sudo', 'mv', temp_path, sources_path])
+        
+        # Atomik olarak taşı
+        success, output = run_command(['sudo', 'mv', temp_path_main, SOURCES_LIST_PATH])
         if not success:
-            return False, f"Geçici dosya taşınırken hata: {output}."
+            return False, f"Geçici dosya ({temp_path_main}) taşınırken hata: {output}."
+
+        # 3. sources.list.d dizinini uygula
+        if not os.path.isdir(SOURCES_DIR_PATH):
+             os.makedirs(SOURCES_DIR_PATH)
+             
+        expected_filenames = set(expected_sources_d.keys())
+        current_filenames = set(f for f in os.listdir(SOURCES_DIR_PATH) if f.endswith(('.list', '.sources')))
+        
+        # Yetkisiz (Rogue) dosyaları sil
+        files_to_delete = current_filenames - expected_filenames
+        for filename in files_to_delete:
+            file_path = os.path.join(SOURCES_DIR_PATH, filename)
+            print(f"Uygulama: Yetkisiz depo dosyası siliniyor: {file_path}")
+            success, output = run_command(['sudo', 'rm', file_path])
+            if not success:
+                return False, f"Yetkisiz depo dosyası ({file_path}) silinirken hata: {output}."
+
+        # Onaylı dosyaları yaz/güncelle
+        for filename, content_str in expected_sources_d.items():
+            content_to_write = content_str.replace(';', '\n')
+            temp_path_d = f"/tmp/{filename}.new"
+            final_path = os.path.join(SOURCES_DIR_PATH, filename)
+            
+            with open(temp_path_d, "w") as f:
+                f.write(content_to_write)
+                if not content_to_write.endswith('\n'):
+                    f.write('\n')
+            
+            success, output = run_command(['sudo', 'mv', temp_path_d, final_path])
+            if not success:
+                return False, f"Onaylı depo dosyası ({final_path}) yazılırken hata: {output}."
 
         # Depoları güncelle
-        print("Depo listesi güncellendi, 'apt-get update' çalıştırılıyor...")
+        print("Depo listeleri güncellendi, 'apt-get update' çalıştırılıyor...")
         success, output = run_command(['sudo', 'apt-get', 'update'], timeout=120)
         if not success:
-            return False, f"'apt-get update' çalıştırılırken hata: {output}."
+            return False, f"'apt-get update' çalıştırılırken hata (Bu, eksik GPG anahtarı gibi başka bir politika sorununu gösterebilir): {output}."
 
-        return True, "Paket yöneticisi depoları başarıyla standart yapılandırmaya getirildi."
+        return True, "Paket yöneticisi depoları (sources.list ve sources.list.d) başarıyla standart yapılandırmaya getirildi."
 
     except Exception as e:
         return False, f"APT depoları uygulanırken genel hata: {e}"
 
 # ==============================================================================
-# == GPG ANAHTAR VE GÜNCELLEME POLİTİKALARI =====================================
+# == GPG ANAHTAR POLİTİKASI =====================================
 # ==============================================================================
 def audit_gpg_keys(username, parameters):
     """
-    Sistemdeki tüm APT GPG anahtarlarının parmak izlerini, parametre olarak verilen 
+    Sistemdeki tüm APT GPG anahtarlarının parmak izlerini, parametre olarak verilen
     onaylı parmak izi listesiyle karşılaştırır. Hem yetkisiz hem de eksik anahtarları raporlar.
     Bu politika, otomatik düzeltme (apply) yapmaz, sadece denetler.
     """
-    # 1. Sunucudan gelen parametreyi akıllıca işle
+    
     fingerprints_param = parameters.get("allowed_fingerprints")
     if not fingerprints_param:
         return False, "Politika hatası: 'allowed_fingerprints' parametresi ile onaylı anahtar listesi belirtilmemiş."
@@ -109,7 +213,7 @@ def audit_gpg_keys(username, parameters):
 
     allowed_set = set(allowed_fingerprints)
     
-    # 2. Sistemdeki tüm anahtar konumlarını tara
+    # Sistemdeki anahtar konumlarını tara
     keyring_paths = ["/etc/apt/keyrings", "/usr/share/keyrings", "/etc/apt/trusted.gpg.d"]
     found_fingerprints = set()
     
@@ -117,24 +221,47 @@ def audit_gpg_keys(username, parameters):
         for path in keyring_paths:
             if os.path.isdir(path):
                 for filename in os.listdir(path):
-                    if filename.endswith((".gpg", ".asc")):
-                        key_file = os.path.join(path, filename)
-                        gpg_cmd = ['gpg', '--batch', '--no-tty', '--with-colons', '--with-fingerprint', key_file]
-                        success, output = run_command(gpg_cmd)
+                    key_file = os.path.join(path, filename)
+                    gpg_cmd = []
+                                        
+                    if filename.endswith(".gpg"):
+                        # .gpg (anahtarlık) dosyaları için
+                        gpg_cmd = [
+                            'gpg', '--batch', '--no-tty', 
+                            '--no-default-keyring', 
+                            '--keyring', key_file, 
+                            '--list-keys',        
+                            '--with-colons', '--with-fingerprint'
+                        ]
+                    elif filename.endswith(".asc"):
+                        # .asc (tekil anahtar) dosyaları için 
+                        gpg_cmd = [
+                            'gpg', '--batch', '--no-tty', 
+                            '--no-default-keyring',
+                            '--with-fingerprint',   
+                            key_file
+                        ]
+                    else:
+                        continue # .gpg veya .asc değilse atla
 
-                        if not success:
-                            continue 
+                    success, output = run_command(gpg_cmd)
 
-                        for line in output.splitlines():
-                            if line.startswith("fpr"):
-                                fingerprint = line.strip().split(':')[9]
-                                if fingerprint:
-                                    found_fingerprints.add(fingerprint)
+                 
+                    if not success:
+                        # Eğer gpg komutu başarısız olduysa denetimi durdur ve hata raporla.
+                        return False, f"HATA: '{key_file}' dosyası okunamadı veya bozuk. gpg çıktısı: {output}"
+               
+
+                    for line in output.splitlines():
+                        if line.startswith("fpr"):
+                            fingerprint = line.strip().split(':')[9]
+                            if fingerprint:
+                                found_fingerprints.add(fingerprint)
 
         if not found_fingerprints:
-            return False, "Sistemde taranan dizinlerde hiçbir geçerli GPG anahtarı bulunamadı."
+            if not allowed_set:
+                 return True, "Sistemde GPG anahtarı bulunamadı ve onaylı listede de anahtar yoktu. (Uyumlu)"
 
-        # 3. Bulunan ve izin verilen listeleri karşılaştır
         unauthorized_keys = found_fingerprints - allowed_set
         if unauthorized_keys:
             return False, f"Yetkisiz GPG anahtarları tespit edildi: {', '.join(unauthorized_keys)}"
@@ -150,67 +277,43 @@ def audit_gpg_keys(username, parameters):
 # ------------------------------------------------------------------------------
 
 # ==============================================================================
-# == PARDUS İÇİN OTOMATİK GÜNCELLEME POLİTİKASI (CRON TABANLI) ===================
+# CIS 1.2.2.1: GÜNCELLEME VE YAMA DENETİMİ POLİTİKASI
 # ==============================================================================
 
-def enable_pardus_automatic_updates(username, parameters):
+def audit_pending_updates(username, parameters):
     """
-    Pardus sistemlerde günlük otomatik güncellemeleri etkinleştirmek için
-    /etc/cron.daily dizinine bir güncelleme betiği oluşturur.
+    CIS 1.2.2.1 
+    Sistemin güncel olup olmadığını denetler.     
     """
-    # Bu politika parametre gerektirmez.
-    cron_script_path = "/etc/cron.daily/pmys-automatic-updates"
     
     try:
-        # cron betiğinin var olup olmadığını kontrol et
-        if os.path.exists(cron_script_path):
-            # Dosyanın varlığı, politikanın zaten uygulandığını gösterir.
-            return True, "Otomatik güncelleme betiği zaten mevcut."
+        # 1. Adım: Depo listesini yenile (apt update)
+        success, output = run_command(['sudo', 'apt-get', 'update'], timeout=120)
+        
+        if not success:
+            return False, f"'apt-get update' başarısız oldu. Depo yapılandırmasını (Policy 1.2.1.2) veya internet bağlantısını kontrol edin. Hata: {output}"
+
+        # 2. Adım: Yükseltilebilecek paketleri listele
+        success, output = run_command(['sudo', 'apt', 'list', '--upgradable'])
+        
+        if not success:
+            return False, f"'apt list --upgradable' komutu çalıştırılamadı. Hata: {output}"
+
+        # 3. Adım: Çıktıyı analiz et     
+        lines = output.strip().splitlines()
+        package_lines = [line for line in lines if not line.strip().startswith('Listing...') and not line.strip().startswith('Listeleniyor...') and not line.strip().startswith('WARNING:')]
+        
+        package_count = len(package_lines)
+
+        if package_count == 0:
+            return True, "Sistem güncel. Bekleyen yama yok."
         else:
-            return apply_pardus_automatic_updates()
+            sample_packages = [line.split('/')[0] for line in package_lines[:3]]
+            return False, f"Sistemde {package_count} adet bekleyen güncelleme/yama var. (Örn: {', '.join(sample_packages)}...)"
 
     except Exception as e:
-        return False, f"Pardus otomatik güncelleme kontrolünde hata: {e}"
+        return False, f"Güncelleme denetimi sırasında genel hata: {e}"
 
-def apply_pardus_automatic_updates():
-    """
-    Günlük güncellemeleri yapacak olan betiği oluşturur ve çalıştırılabilir yapar.
-    """
-    cron_script_path = "/etc/cron.daily/pmys-automatic-updates"
-    temp_path = "/tmp/pmys-automatic-updates.sh"
-    
-    # Oluşturulacak betiğin (script) içeriği
-    script_content = """#!/bin/bash
-# PMYS Agent tarafından Pardus için otomatik güncelleme amacıyla oluşturulmuştur.
-# Bu betik /etc/cron.daily dizininde bulunduğu için sistem tarafından her gün otomatik çalıştırılır.
-
-# Paket listesini yeniler ve tüm güncellemeleri `-y` parametresiyle
-# otomatik onaylayarak yükler. Ardından gereksiz paketleri temizler.
-apt-get update && apt-get upgrade -y && apt-get autoremove -y
-
-exit 0
-"""
-
-    try:
-        # 1. Betiği önce geçici bir dosyaya yaz
-        with open(temp_path, "w") as f:
-            f.write(script_content)
-
-        # 2. Geçici dosyayı sudo ile asıl yerine taşı
-        success, output = run_command(['sudo', 'mv', temp_path, cron_script_path])
-        if not success:
-            return False, f"Geçici dosya taşınırken hata: {output}. 'sudoers' dosyasını kontrol edin."
-
-        # 3. Betiği çalıştırılabilir yap (chmod +x)
-        success, output = run_command(['sudo', 'chmod', '+x', cron_script_path])
-        if not success:
-            return False, f"Betik çalıştırılabilir hale getirilirken hata: {output}. 'sudoers' dosyasını kontrol edin."
-
-        return True, "Günlük otomatik güncelleme betiği başarıyla oluşturuldu."
-  
-    except Exception as e:
-        return False, f"Güncelleme betiği uygulanırken genel hata: {e}"
-    
 
 # ==============================================================================
 # Paket Sürüm Sabitleme
@@ -273,13 +376,10 @@ def check_required_software(username, parameters):
     """
     required_param = parameters.get("required", [])
     if isinstance(required_param, str):
-        # Eğer string ise, tek elemanlı bir listeye çevir
         required_packages = [required_param]
     elif isinstance(required_param, list):
-        # Zaten liste ise, olduğu gibi kullan
         required_packages = required_param
     else:
-        # Başka bir tip ise hata ver
         return False, f"Hata: 'required' parametresi bir metin (string) veya liste (array) olmalıdır. Gelen tip: {type(required_param)}"
     
     

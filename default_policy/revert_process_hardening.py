@@ -7,80 +7,80 @@ from utils import run_command;
 
 def revert_process_hardening():
     """
-    ASLR, ptrace ve core dump için yapılan sysctl ve limits.conf
-    değişikliklerini geri alır.
+    ASLR, ptrace ve core dump için server tarafından oluşturulmuş 
+    sysctl.d ve limits.d yapılandırma dosyalarını kaldırarak ayarları
+    varsayılan (default) durumuna geri döndürür.
     """
-    logger.info("[DEFAULT] Çekirdek güvenliği (Process Hardening) ayarları kontrol ediliyor...")
+    logger.info("[DEFAULT] Çekirdek güvenliği (Process Hardening) ayarları geri alınıyor...")
 
-    # 1. Sysctl dosyalarını kaldır
+    # ==========================================================================
+    # 1. Sysctl (.conf) dosyalarını kaldır
+    # ==========================================================================
     sysctl_files_to_remove = [
         "/etc/sysctl.d/99-aslr-hardening.conf",
         "/etc/sysctl.d/99-ptrace-hardening.conf",
         "/etc/sysctl.d/99-coredump-hardening.conf"
     ]
+    
     changes_made = False
+    
     for file_path in sysctl_files_to_remove:
-        if os.path.exists(file_path):
-            try:
+        try:
+            if os.path.exists(file_path):
                 logger.info(f"[DEFAULT] Sysctl kural dosyası '{file_path}' kaldırılıyor...")
                 success, output = run_command(['sudo', 'rm', '-f', file_path])
+                
                 if not success:
                     logger.error(f"[DEFAULT] '{file_path}' kaldırılırken hata: {output}")
-                changes_made = True
-            except Exception as e:
-                logger.error(f"[DEFAULT] '{file_path}' kaldırılırken hata: {e}")
+                else:
+                    changes_made = True
+            else:
+                logger.info(f"[DEFAULT] Sysctl kural dosyası '{file_path}' zaten yok (varsayılan).")
+        
+        except Exception as e:
+            logger.error(f"[DEFAULT] '{file_path}' kaldırılırken beklenmedik hata: {e}")
     
-    # Eğer en az bir sysctl dosyası silindiyse, ayarları yeniden yükle
+    # Eğer en az bir sysctl dosyası silindiyse, çalışan ayarları yeniden yükle
     if changes_made:
         try:
-            logger.info("[DEFAULT] Sysctl ayarları yeniden yükleniyor...")
-            subprocess.run(['sudo', 'sysctl', '--system'], check=True)
-            logger.info("[DEFAULT] Sysctl ayarları başarıyla varsayılana döndürüldü.")
+            logger.info("[DEFAULT] Sysctl ayarları (çalışan sistem) varsayılanlara döndürülüyor...")
+            # '--system', kaldırılan dosyaları hesaba katmayacak ve 
+            # kalan .conf dosyalarına göre sistemi yeniden yükleyecektir.
+            success, output = run_command(['sudo', 'sysctl', '--system'])
+            
+            if success:
+                logger.info("[DEFAULT] Sysctl ayarları başarıyla varsayılana döndürüldü.")
+            else:
+                logger.error(f"[DEFAULT] 'sysctl --system' komutu çalıştırılırken hata: {output}")
+        
         except Exception as e:
-            logger.error(f"[DEFAULT] 'sysctl --system' komutu çalıştırılırken hata: {e}")
+            logger.error(f"[DEFAULT] 'sysctl --system' komutu çalıştırılırken istisna: {e}")
     else:
         logger.info("[DEFAULT] Process hardening için eklenmiş sysctl kuralı bulunamadı.")
 
 
-    # 2. limits.conf dosyasından core dump satırını kaldır
-    limits_path = "/etc/security/limits.conf"
-    if os.path.exists(limits_path):
-        try:
-            with open(limits_path, "r") as f:
-                lines = f.readlines()
-
-            # CIS politikası tarafından eklenen satırları ve yorumları içeren yeni bir liste oluştur
-            new_lines = []
-            skip_next = False
-            modified = False
-            for line in lines:
-                if skip_next:
-                    skip_next = False
-                    continue
-                if line.strip() == "# CIS: Core dumps disabled for security":
-                    skip_next = True # Bir sonraki satırı da atla
-                    modified = True
-                    continue
-                
-                # Alternatif olarak, sadece kuralın kendisini de silebiliriz
-                if line.strip() == "* hard core 0":
-                    modified = True
-                    continue
-                
-                new_lines.append(line)
-
-            if modified:
-                logger.info(f"[DEFAULT] '{limits_path}' dosyasından core dump kuralı kaldırılıyor...")
-                temp_path = "/tmp/limits.conf.revert"
-                with open(temp_path, "w") as f:
-                    f.writelines(new_lines)
-                success, output = run_command(['sudo', 'mv', temp_path, limits_path])
-                if not success:
-                    logger.error(f"[DEFAULT] '{limits_path}' geri alınamadı: {output}")
-                    return
-                logger.info(f"[DEFAULT] '{limits_path}' başarıyla temizlendi.")
+    # ==========================================================================
+    # 2. limits.d (.conf) dosyasını kaldır (DÜZELTİLMİŞ KISIM)
+    # ==========================================================================
+    
+    limits_path_to_remove = "/etc/security/limits.d/99-coredump-hardening.conf"
+    
+    try:
+        if os.path.exists(limits_path_to_remove):
+            logger.info(f"[DEFAULT] 'limits.d' kural dosyası '{limits_path_to_remove}' kaldırılıyor...")
+            success, output = run_command(['sudo', 'rm', '-f', limits_path_to_remove])
+            
+            if not success:
+                logger.error(f"[DEFAULT] '{limits_path_to_remove}' kaldırılırken hata: {output}")
             else:
-                logger.info(f"[DEFAULT] '{limits_path}' içinde core dump kuralı bulunamadı.")
+                # 'limits.d' ayarlarının anlık bir 'yeniden yükle' komutu yoktur.
+                # Değişiklik, bir sonraki 'login' (oturum açma) işleminde geçerli olacaktır.
+                logger.info(f"[DEFAULT] '{limits_path_to_remove}' başarıyla kaldırıldı. (Varsayılan limitler bir sonraki oturumda geçerli olacak)")
+        else:
+            logger.info(f"[DEFAULT] Core dump için eklenmiş 'limits.d' kuralı bulunamadı.")
+            
+    except Exception as e:
+        logger.error(f"[DEFAULT] '{limits_path_to_remove}' kaldırılırken beklenmedik hata: {e}")
 
-        except Exception as e:
-            logger.error(f"[DEFAULT] '{limits_path}' geri alınırken hata: {e}")
+    logger.info("[DEFAULT] Process Hardening revert işlemi tamamlandı.")
+    return True

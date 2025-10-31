@@ -4,18 +4,17 @@ from logger import logger
 # Her dosyanın içinde, o kategoriyle ilgili tüm işlemleri yapan bir ana fonksiyon olmalı.
 # Fonksiyon isimlerinin tutarlı olması, kodu daha okunabilir kılar.
 from .revert_apparmor_settings import revert_apparmor_settings
-from .revert_apt_and_update_settings import revert_apt_and_update_settings
 from .revert_login_banners import revert_login_banners
 from .revert_bootloader_settings import revert_bootloader_settings
-from .revert_disabled_modules import revert_disabled_modules
+from .revert_filesystem_kernels import revert_disabled_modules
 from .revert_file_permissions_and_ownership import revert_file_permissions_and_ownership
-from .revert_fstab_changes import revert_fstab_changes
 from .revert_interface_protocols import revert_interface_protocols
 from .revert_package_removals import revert_services_settings
 from .revert_process_hardening import revert_process_hardening
-from .revert_sysctl_parameters import revert_sysctl_parameters
 from .revert_firewall import revert_firewall_settings
 from .revert_sudo import revert_sudo_settings
+from .revert_network_kernel_modules import revert_disabled_network_modules
+from .revert_network_kernel_parameters import revert_sysctl_parameters
 
 
 
@@ -123,18 +122,19 @@ def restore_all_to_default():
 
     # Adım 2: Import edilen tüm fonksiyonları sırayla ve güvenli bir şekilde çağır.
     _revert_safely(revert_apparmor_settings, "AppArmor")
-    _revert_safely(revert_apt_and_update_settings, "APT & Update Settings")
     _revert_safely(revert_login_banners, "Login Banners")
     _revert_safely(revert_bootloader_settings, "Bootloader Settings")
     _revert_safely(revert_disabled_modules, "Kernel Module Disabling")
     _revert_safely(revert_file_permissions_and_ownership, "File Permissions & Ownership")
-    _revert_safely(revert_fstab_changes, "Fstab Changes")
     _revert_safely(revert_interface_protocols, "Interface/Protocol Disabling")
     _revert_safely(revert_services_settings, "Service Settings")
     _revert_safely(revert_process_hardening, "Process Hardening")
     _revert_safely(revert_sysctl_parameters, "Sysctl Parameters")
     _revert_safely(revert_firewall_settings, "Firewall Settings")
     _revert_safely(revert_sudo_settings, "Sudo Settings")
+    _revert_safely(revert_disabled_network_modules, "Network Kernel Module Disabling")
+    _revert_safely(revert_sysctl_parameters, "Network Sysctl Parameters")
+
 
 
     

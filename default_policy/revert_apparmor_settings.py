@@ -8,36 +8,49 @@ from utils import run_command;
 
 def revert_apparmor_settings():
     """
-    GRUB yapılandırmasına eklenen AppArmor parametrelerini kaldırır.
+    Sistem genelindeki AppArmor ayarlarını 'varsayılan' (default) duruma
+    döndürür. 
+    
+    Bu betik, 'apply_enforce_all_profiles' (Politika 4) tarafından yapılan
+    'enforce' (sıkı) mod değişikliğini geri alır.
+    
+    'apply' kodunun tersi olarak, tüm profilleri 'complain' (şikayet/loglama)
+    moduna alır. Bu, sistem açılışı için güvenli bir varsayılan durumdur.
+    
+    NOT: Bu kod, GRUB veya paket kurulumu gibi tehlikeli ve geri
+    alınmaması gereken (baseline) ayarları DEĞİŞTİRMEZ.
     """
-    config_path = "/etc/default/grub"
-    if not os.path.exists(config_path):
-        return
+    logger.info("[DEFAULT] AppArmor profilleri 'complain' (varsayılan) moda alınıyor...")
 
-    with open(config_path, "r") as f:
-        content = f.read()
+    # 'aa-enforce /etc/apparmor.d/*' komutunun tersi,
+    # 'aa-complain /etc/apparmor.d/*' komutudur.
+    complain_cmd = ['sudo', 'aa-complain', '/etc/apparmor.d/*']
+    
+    # Değişiklikleri etkinleştirmek için 'reload' komutunu da çalıştırmak
+    reload_cmd = ['sudo', 'service', 'apparmor', 'reload']
 
-    # Eğer CIS politikası bir değişiklik yapmışsa (parametreler ekliyse)
-    if "apparmor=1" in content or "security=apparmor" in content:
-        logger.info("[DEFAULT] GRUB'dan AppArmor parametreleri kaldırılıyor...")
-        # Parametreleri boşlukla değiştirerek temizle
-        new_content = re.sub(r'\s*apparmor=1\s*', ' ', content)
-        new_content = re.sub(r'\s*security=apparmor\s*', ' ', new_content)
-
-        # GRUB_CMDLINE_LINUX satırındaki çift boşlukları tek boşluğa indir
-        new_content = re.sub(r'GRUB_CMDLINE_LINUX="([^"]*)"', lambda m: f'GRUB_CMDLINE_LINUX="{" ".join(m.group(1).split())}"', new_content)
-
-        temp_path = "/tmp/grub.revert"
-        with open(temp_path, "w") as f:
-            f.write(new_content)
-
-        success , output = run_command(['sudo', 'mv', temp_path, config_path])
+    try:
+        # 1. Tüm profilleri 'complain' moduna al
+        success, output = run_command(complain_cmd)
+        
         if not success:
-            logger.error(f"[DEFAULT] GRUB yapılandırması geri alınamadı: {output}")
-            return
+            if "No such file" in output:
+                 logger.warning("[DEFAULT] AppArmor yüklü görünmüyor ('aa-complain' bulunamadı). Revert atlanıyor.")
+                 return True 
+            else:
+                logger.error(f"[DEFAULT] 'aa-complain' komutu çalıştırılırken hata: {output}")
+                return False
 
-        success, output = run_command(['sudo', 'update-grub'])
+        # 2. Servisi yeniden yükle
+        success, output = run_command(reload_cmd)
+
         if not success:
-            logger.error(f"[DEFAULT] GRUB güncellenirken hata: {output}")
-            return
-        logger.info("[DEFAULT] GRUB başarıyla varsayılana döndürüldü.")
+             logger.error(f"[DEFAULT] AppArmor servisi 'reload' edilirken hata: {output}")
+             return False
+
+        logger.info("[DEFAULT] AppArmor profilleri başarıyla 'complain' moduna (varsayılan) alındı.")
+        return True
+
+    except Exception as e:
+        logger.error(f"[DEFAULT] AppArmor profilleri geri alınırken genel hata: {e}")
+        return False

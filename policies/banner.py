@@ -19,16 +19,17 @@ def configure_message_of_the_day(username, parameters):
 
     file_path = "/etc/motd"
     try:
-        # Dosyanın mevcut durumunu kontrol et
         if os.path.exists(file_path):
-            with open(file_path, "r") as f: content_ok = banner_text in f.read()
+            with open(file_path, "r") as f:
+                current_content = f.read()
+            expected_content = banner_text + "\n"
             file_stat = os.stat(file_path)
             owner_ok = file_stat.st_uid == 0 and file_stat.st_gid == 0
             perms_ok = stat.S_IMODE(file_stat.st_mode) == 0o644
+            content_ok = (current_content == expected_content)
             if content_ok and owner_ok and perms_ok:
                 return True, "Günün Mesajı (motd) zaten doğru yapılandırılmış."
         
-        # Durum doğru değilse veya dosya hiç yoksa, uygula
         return apply_message_of_the_day(parameters)
     except Exception as e:
         return False, f"Günün Mesajı (motd) kontrol edilirken hata: {e}"
@@ -66,11 +67,13 @@ def configure_local_login_banner(username, parameters):
     banner_text = parameters.get("banner_text")
     if not banner_text:
         return False, "Politika hatası: 'banner_text' parametresi zorunludur."
-
+    policy_content = banner_text.strip()
     file_path = "/etc/issue"
     try:
         if os.path.exists(file_path):
-            with open(file_path, "r") as f: content_ok = banner_text in f.read()
+            with open(file_path, "r") as f:
+                current_content = f.read().strip()
+            content_ok = (current_content == policy_content)
             file_stat = os.stat(file_path)
             owner_ok = file_stat.st_uid == 0 and file_stat.st_gid == 0
             perms_ok = stat.S_IMODE(file_stat.st_mode) == 0o644
@@ -114,11 +117,14 @@ def configure_remote_login_banner(username, parameters):
     banner_text = parameters.get("banner_text")
     if not banner_text:
         return False, "Politika hatası: 'banner_text' parametresi zorunludur."
-
+    
+    policy_content = banner_text.strip()
     file_path = "/etc/issue.net"
     try:
         if os.path.exists(file_path):
-            with open(file_path, "r") as f: content_ok = banner_text in f.read()
+            with open(file_path, "r") as f:
+                current_content = f.read().strip()
+            content_ok = (current_content == policy_content)
             file_stat = os.stat(file_path)
             owner_ok = file_stat.st_uid == 0 and file_stat.st_gid == 0
             perms_ok = stat.S_IMODE(file_stat.st_mode) == 0o644

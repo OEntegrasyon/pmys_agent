@@ -14,12 +14,7 @@ MODULES_TO_RE_ENABLE = [
     "jffs2",
     "squashfs",
     "udf",
-    "usb-storage",
-    # Ağ ile ilgili olanlar (önceki loglarda gördüklerimiz)
-    "dccp",
-    "sctp",
-    "rds",
-    "tipc"
+    "usb-storage"
 ]
 
 def revert_disabled_modules():

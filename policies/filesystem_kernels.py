@@ -8,63 +8,80 @@ from utils import get_logged_in_user, get_desktop_env, run_command
 # == ÇEKİRDEK MODÜLÜ DEVRE DIŞI BIRAKMA 8 Politika  =========
 # ==============================================================================
 
-# Sunucuda "Politika Tipi" olarak kaydedeceğiniz isim budur.
 def check_module_disabled(username, parameters):
     """
-    CIS Kuralı: Belirtilen bir çekirdek modülünün yüklenmesini engeller.
-    Hangi modülün engelleneceği, 'parameters' içindeki 'module_name' anahtarıyla belirtilir.
+    CIS Kuralı: Belirtilen bir çekirdek modülünün (örn: cramfs) 
+    yüklü OLMADIĞINI ve yüklenemez olduğunu DENETLER.
     """
-    # 1. Sunucudan gelen parametrelerin içinden 'module_name' değerini alıyoruz.
     module_name = parameters.get("module_name")
-
-    # 2. Parametrenin gönderilip gönderilmediğini kontrol ediyoruz.
     if not module_name:
-        return False, "Politika hatası: Hangi modülün devre dışı bırakılacağı 'module_name' parametresi ile belirtilmemiş."
+        return False, "Politika hatası: 'module_name' parametresi belirtilmemiş."
 
-    # 3. Kuralın varlığını ve içeriğini kontrol et.
     rule_path = f"/etc/modprobe.d/{module_name}-blacklist.conf"
-    expected_content = f"install {module_name} /bin/true"
     
     try:
+        # --- DENETİM 1: Modül o an yüklü mü? ---
+        lsmod_process = subprocess.run(['lsmod'], capture_output=True, text=True, check=True)
+        is_loaded = module_name in lsmod_process.stdout
+        
+        # --- DENETİM 2: Kalıcı kurallar doğru mu? ---
+        rules_correct = False
         if os.path.exists(rule_path):
             with open(rule_path, "r") as f:
                 content = f.read()
-            
-            if expected_content in content:
-                # Her şey yolunda, kural zaten mevcut ve doğru.
-                return True, f"{module_name} modülü zaten devre dışı."
-            else:
-                # Dosya var ama içeriği yanlış, yeniden uygula.
-                return apply_module_disabled(module_name)
+                # Her iki kuralın da (doğru olanların) dosyada olmasını bekle
+                if f"install {module_name} /bin/false" in content and f"blacklist {module_name}" in content:
+                    rules_correct = True
+
+        if not is_loaded and rules_correct:
+            return True, f"{module_name} modülü zaten devre dışı bırakılmış (Uyumlu)."
         else:
-            # Kural dosyası hiç yok, uygula.
+            if is_loaded:
+                print(f"Denetim Başarısız: '{module_name}' modülü o an yüklü.")
+            if not rules_correct:
+                print(f"Denetim Başarısız: '{rule_path}' dosyasındaki kurallar eksik veya yanlış.")
+
             return apply_module_disabled(module_name)
-            
+
+    except subprocess.CalledProcessError as e:
+        return False, f"'lsmod' komutu çalıştırılamadı: {e}"
     except Exception as e:
-        return False, f"Modül kontrolünde hata: {e}"
+        return False, f"Modül '{module_name}' denetiminde hata: {e}"
 
 def apply_module_disabled(module_name: str) -> tuple[bool, str]:
     """
-    Belirtilen çekirdek modülünü /etc/modprobe.d/ içinde bir kural oluşturarak
-    devre dışı bırakır. Sadece check_module_disabled tarafından çağrılır.
+    CIS standardına uygun olarak modülü devre dışı bırakır.
+    1. Kalıcı kural dosyası oluşturur (/bin/false ve blacklist).
+    2. Modül o an yüklüyse sistemden kaldırır.
     """
     rule_path = f"/etc/modprobe.d/{module_name}-blacklist.conf"
-    temp_path = f"/tmp/{module_name}-blacklist.conf"
-    rule_content = f"install {module_name} /bin/true\n"
+    temp_path = f"/tmp/{module_name}-blacklist.conf.tmp"
+    
+    rule_content = (
+        f"# GPOS ajanı tarafından CIS 1.1.1.1 (ve benzeri) uyarınca yönetilmektedir.\n"
+        f"install {module_name} /bin/false\n"
+        f"blacklist {module_name}\n"
+    )
 
     try:
-        # Kuralı önce geçici bir dosyaya yaz
         with open(temp_path, "w") as f:
             f.write(rule_content)
 
-        # sudo ile dosyayı kalıcı yerine taşı
         success, output = run_command(['sudo', 'mv', temp_path, rule_path])
         if not success:
-            return False, f"Modül kural dosyası oluşturulamadı: {output}. 'sudoers' dosyasını kontrol edin."
+            return False, f"Modül kural dosyası ({rule_path}) oluşturulamadı: {output}"
+        
+        run_command(['sudo', 'chown', 'root:root', rule_path])
+        run_command(['sudo', 'chmod', '0644', rule_path])
 
-        return True, f"{module_name} modülü başarıyla devre dışı bırakıldı."
+        is_loaded_check = subprocess.run(['lsmod'], capture_output=True, text=True, check=True)
+        if module_name in is_loaded_check.stdout:
+            print(f"Bilgi: '{module_name}' modülü yüklü, sistemden kaldırılıyor...")
+            success_unload, out_unload = run_command(['sudo', 'modprobe', '-r', module_name])
+            if not success_unload:
+                return False, f"'{module_name}' modülü yüklüydü ancak kaldırılamadı (muhtemelen kullanımda): {out_unload}"
+
+        return True, f"{module_name} modülü başarıyla devre dışı bırakıldı ve kurallar uygulandı."
     
-    except PermissionError:
-        return False, f"Yetki hatası: {temp_path} dosyasına yazma izni yok."
     except Exception as e:
-        return False, f"Modül devre dışı bırakılırken genel bir hata oluştu: {e}"
+        return False, f"Modül '{module_name}' devre dışı bırakılırken hata: {e}"

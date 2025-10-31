@@ -37,6 +37,7 @@ from .network import (
     disable_wireless_interfaces,
     disable_bluetooth_service,
     check_ipv6_status,
+    ensure_ipv6_disabled,
     configure_sysctl_parameter,
     check_network_configuration
 )
@@ -44,7 +45,7 @@ from .network import (
 from .package_managment import (
     check_secure_apt_repositories,
     audit_gpg_keys,
-    enable_pardus_automatic_updates,
+    audit_pending_updates,
     check_package_pinning,
     check_required_software
 )
@@ -70,8 +71,7 @@ from .sudo import (
     )
 
 from .firewall import (
-    configure_secure_firewall
-    audit_and_fix_unowned_files
+    configure_secure_firewall    
 )
 
 from .time_synchronization import (

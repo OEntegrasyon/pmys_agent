@@ -128,81 +128,149 @@ def apply_apparmor_to_grub(config_path, current_content, current_cmdline):
 
 
 # ------------------------------------------------------------------------------
-# Politika 3: Tüm AppArmor Profillerini Enforce veya Complain Moduna Al
+# Politika 3: Tüm AppArmor Profillerini Enforce veya Complain Modunda oldupundan emin ol
+def _parse_apparmor_status(output):
+    """
+    'apparmor_status' komutunun çıktısını analiz eder ve iki önemli
+    değeri (disabled_count, unconfined_count) döndürür.
+    """
+    disabled_count = 0
+    unconfined_count = 0
+    
+    # "X profiles are disabled." (X profil devre dışı) satırını bul
+    disabled_match = re.search(r"^\s*(\d+)\s+profiles\s+are\s+disabled", output, re.MULTILINE)
+    if disabled_match:
+        disabled_count = int(disabled_match.group(1))
+
+    # "X processes are unconfined..." (X süreç korumasız) satırını bul
+    unconfined_match = re.search(r"^\s*(\d+)\s+processes\s+are\s+unconfined", output, re.MULTILINE)
+    if unconfined_match:
+        unconfined_count = int(unconfined_match.group(1))
+        
+    return disabled_count, unconfined_count
+
 def ensure_no_apparmor_profiles_are_disabled(username, parameters):
     """
-    Hiçbir AppArmor profilinin devre dışı bırakılmadığından emin olur.
-    /etc/apparmor.d/disable/ dizinini kontrol eder.
+    CIS 1.3.1.3 DENETİM (AUDIT) FONKSİYONU - SADECE RAPORLAMA.
+    'apparmor_status' komutunu çalıştırır ve hem devre dışı (disabled) profilleri
+    hem de korumasız (unconfined) çalışan süreçleri denetler.
+    
+    'apply' (düzeltme) fonksiyonunu ASLA çağırmaz, sadece rapor (mesaj) döner.
     """
-    # Bu politika parametre gerektirmez.
-    disable_dir = "/etc/apparmor.d/disable/"
     
     try:
-        # Devre dışı bırakma dizini yoksa veya boşsa, her şey yolundadır.
-        if not os.path.exists(disable_dir) or not os.listdir(disable_dir):
-            return True, "Devre dışı bırakılmış AppArmor profili bulunmuyor."
-        else:
-            # Eğer dizinde dosya varsa, bu profiller devre dışı bırakılmış demektir.
-            return apply_reenable_all_profiles()
-
-    except Exception as e:
-        return False, f"Devre dışı AppArmor profilleri kontrol edilirken hata: {e}"
-
-def apply_reenable_all_profiles():
-    """
-    /etc/apparmor.d/disable/ dizinindeki tüm sembolik linkleri silerek
-    devre dışı bırakılmış profilleri yeniden etkinleştirir ve AppArmor'u yeniden yükler.
-    """
-    disable_dir = "/etc/apparmor.d/disable/"
-    try:
-        disabled_profiles = os.listdir(disable_dir)
-        for profile_link in disabled_profiles:
-            full_path = os.path.join(disable_dir, profile_link)
-            print(f"'{profile_link}' profili yeniden etkinleştiriliyor...")
-            success, output = run_command(['sudo', 'rm', full_path])
-            if not success:
-                return False, f"'{profile_link}' profilini yeniden etkinleştirirken hata: {output}"
+        # CIS Audit komutunu çalıştır.
+        success, output = run_command(['sudo', 'apparmor_status'])
         
-        # AppArmor servisini yeniden yükleyerek değişiklikleri aktif et
-        success, output = run_command(['sudo', 'service', 'apparmor', 'reload'])
         if not success:
-            return False, f"AppArmor servisi yeniden yüklenirken hata: {output}"
+            return False, f"'apparmor_status' komutu çalıştırılamadı. AppArmor yüklü mü? Hata: {output}"
 
-        return True, f"Devre dışı bırakılmış profiller ({', '.join(disabled_profiles)}) başarıyla yeniden etkinleştirildi."
+        disabled_count, unconfined_count = _parse_apparmor_status(output)
+
+        # 1. Kontrol: Devre dışı (disabled) profil var mı?
+        if disabled_count > 0:
+            return False, f"Uyumsuz: Sistemde {disabled_count} adet 'disabled' (devre dışı) AppArmor profili bulundu."
+
+        # 2. Kontrol: Korumasız (unconfined) süreç var mı?
+        if unconfined_count > 0:
+            return False, f"Uyumsuz: Sistemde {unconfined_count} adet 'unconfined' (korumasız) çalışan süreç bulundu."
+            
+        # Eğer her iki kontrol de 0 (sıfır) ise, sistem uyumludur.
+        return True, "Tüm AppArmor profilleri yüklü ve çalışan süreçler koruma altında (enforce/complain modunda)."
+
     except Exception as e:
-        return False, f"Profiller yeniden etkinleştirilirken genel hata: {e}"
+        return False, f"AppArmor denetimi sırasında genel hata: {e}"
+
+
 # ------------------------------------------------------------------------------
 # Politika 4: Tüm AppArmor Profillerini 'enforce' Moduna Al
+
+def _parse_apparmor_status_level2(output):
+    """
+    'apparmor_status' çıktısını CIS 1.3.1.4 (Level 2) için analiz eder.
+    'enforce' (sıkı) modda olmayan TÜM profillerin ve süreçlerin
+    (complain, disabled, unconfined) toplam sayısını döndürür.
+    """
+    non_enforced_count = 0
+    
+    # 1. 'complain' modundaki profiller (Uyumsuz)
+    complain_profiles_match = re.search(r"^\s*(\d+)\s+profiles\s+are\s+in\s+complain\s+mode", output, re.MULTILINE)
+    if complain_profiles_match:
+        non_enforced_count += int(complain_profiles_match.group(1))
+
+    # 2. 'disabled' (devre dışı) profiller (Uyumsuz)
+    disabled_profiles_match = re.search(r"^\s*(\d+)\s+profiles\s+are\s+disabled", output, re.MULTILINE)
+    if disabled_profiles_match:
+        non_enforced_count += int(disabled_profiles_match.group(1))
+        
+    # 3. 'complain' modundaki süreçler (Uyumsuz)
+    complain_processes_match = re.search(r"^\s*(\d+)\s+processes\s+are\s+in\s+complain\s+mode", output, re.MULTILINE)
+    if complain_processes_match:
+        non_enforced_count += int(complain_processes_match.group(1))
+
+    # 4. 'unconfined' (korumasız) süreçler (Kritik - Uyumsuz)
+    unconfined_processes_match = re.search(r"^\s*(\d+)\s+processes\s+are\s+unconfined", output, re.MULTILINE)
+    if unconfined_processes_match:
+        non_enforced_count += int(unconfined_processes_match.group(1))
+
+    return non_enforced_count
+
 def set_apparmor_profiles_to_enforce(username, parameters):
     """
-    'complain' (şikayet) modundaki tüm AppArmor profillerini 'enforce' (zorlama) moduna geçirir.
+    CIS 1.3.1.4 DENETİM (AUDIT) FONKSİYONU (Level 2).
+    'apparmor_status' komutunu çalıştırır ve 'complain', 'disabled', 
+    veya 'unconfined' modda olan TÜM profil/süreçleri denetler.
+    
+    Uyumsuzluk bulursa, 'apply' fonksiyonunu çağırır.
     """
-    # Bu politika parametre gerektirmez.
+    
     try:
-        # aa-status komutunu sudo ile çalıştır
-        success, output = run_command(['sudo', 'aa-status'])
-        if not success:
-            return False, f"aa-status komutu çalıştırılamadı: {output}. sudoers dosyasını kontrol edin."
+        # CIS Audit komutunu çalıştır.
+        success, output = run_command(['sudo', 'apparmor_status'])
         
-        # 'complain mode' içinde profil var mı diye kontrol et
-        complain_section = re.search(r'(\d+)\s+profiles are in complain mode.', output)
+        if not success:
+            return False, f"'apparmor_status' komutu çalıştırılamadı. AppArmor yüklü mü? Hata: {output}"
 
-        if complain_section and int(complain_section.group(1)) > 0:
-            # Complain modunda profil varsa, apply fonksiyonunu çağır
-            return apply_enforce_all_profiles()
+        # Çıktıyı analiz et
+        non_enforced_count = _parse_apparmor_status_level2(output)
+
+        if non_enforced_count == 0:
+            # Sıfır ise, her şey 'enforce' modundadır.
+            return True, "Tüm AppArmor profilleri ve süreçleri 'enforce' (sıkı) modda."
         else:
-            return True, "Tüm AppArmor profilleri zaten 'enforce' modunda veya hiç 'complain' modunda profil yok."
+            # Sıfırdan büyükse, uyumsuzluk var demektir.
+            print(f"Denetim: {non_enforced_count} adet 'enforce' modunda olmayan profil/süreç bulundu. Düzeltme uygulanacak.")
+            return apply_enforce_all_profiles(username, parameters)
+
     except Exception as e:
-        return False, f"AppArmor profil durumu kontrol edilirken hata: {e}"
+        return False, f"AppArmor (Level 2) denetimi sırasında genel hata: {e}"
 
-def apply_enforce_all_profiles():
+def apply_enforce_all_profiles(username, parameters):
     """
-    Tüm profilleri enforce moduna alır.
+    CIS 1.3.1.4 
+    Tüm AppArmor profillerini 'enforce' (Sıkı Mod) moduna alır.
     """
+    
+    # CIS 1.3.1.4 tarafından önerilen tek Düzeltme komutu
+    enforce_cmd = ['sudo', 'aa-enforce', '/etc/apparmor.d/*']
+    
+    # Değişiklikleri etkinleştirmek için 'reload' komutunu da çalıştırmak
+    reload_cmd = ['sudo', 'service', 'apparmor', 'reload']
 
-    # aa-enforce komutu ile tüm profilleri enforce moduna al
-    success , output= run_command(['sudo', 'aa-enforce', '/etc/apparmor.d/*'])
-    if not success:
-        return False, f"Profiller 'enforce' moduna alınırken hata: {output}. sudoers dosyasını kontrol edin."
-    return True, "Tüm 'complain' modundaki profiller başarıyla 'enforce' moduna alındı."
+    try:
+        print("AppArmor Düzeltme: Tüm profiller 'enforce' (sıkı) moda alınıyor...")
+        success, output = run_command(enforce_cmd)
+        
+        if not success:
+            return False, f"'aa-enforce /etc/apparmor.d/*' komutu çalıştırılırken hata: {output}"
 
+        print("AppArmor Düzeltme: Profil değişiklikleri 'reload' ile yeniden yükleniyor...")
+        success, output = run_command(reload_cmd)
+
+        if not success:
+             return False, f"AppArmor servisi 'reload' edilirken hata: {output}"
+
+        return True, "Tüm AppArmor profilleri 'enforce' moduna alındı ve servis yeniden yüklendi. NOT: Tam koruma için, uygulamaların yeniden başlatılması gerekebilir."
+
+    except Exception as e:
+        return False, f"AppArmor profilleri (Level 2) uygulanırken genel hata: {e}"

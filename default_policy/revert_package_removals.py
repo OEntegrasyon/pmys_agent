@@ -10,7 +10,7 @@ def revert_services_settings():
     """Servislerle ilgili TÜM geri alma işlemlerini yönetir."""
     logger.info("[DEFAULT] Servis ayarları kontrol ediliyor...")
     _revert_autofs_service()
-    _revert_package_removals
+    _revert_package_removals()
 
 PACKAGES_TO_REINSTALL = [
     "telnet",
@@ -67,18 +67,15 @@ def _revert_autofs_service():
     service_name = "autofs.service"
 
     try:
-        # --- Önce MASKELENMİŞ Mİ diye kontrol et ---
         # CIS politikasının ikincil çözümünü (maskeleme) geri al.
         success, output = run_command(['systemctl', 'is-enabled', service_name])
         if success and "masked" in output:
             logger.info(f"[DEFAULT] '{service_name}' maskelenmiş, maske kaldırılıyor...")
-            # Maskeyi kaldır ve servisi tekrar etkinleştirip başlat.
             run_command(['sudo', 'systemctl', 'unmask', service_name])
             run_command(['sudo', 'systemctl', 'enable', '--now', service_name])
             logger.info(f"[DEFAULT] '{service_name}' servisi başarıyla yeniden etkinleştirildi.")
-            return # İşlem bittiği için fonksiyondan çık.
+            return
 
-        # --- Eğer maskelenmemişse, KALDIRILMIŞ MI diye kontrol et ---
         # CIS politikasının birincil çözümünü (purge) geri al.
         success, output = run_command(['dpkg', '-l', package_name])
         if f"ii  {package_name}" not in output:
