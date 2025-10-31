@@ -140,8 +140,6 @@ def apply_password_expiration(username=None, param=None):
 
 
 
-
-
 def check_min_password_days(expected_value=1):
     """
     CIS 5.4.1.2 - Ensure minimum password days is configured
@@ -1503,7 +1501,6 @@ def apply_ensure_nologin_not_in_shells(username=None, param=None):
         msg = f"Hata: {str(e)}"
         logger.error(f"[APPLY][5.4.3.1] İşlem sırasında hata oluştu: {msg}")
         return False, msg
-
 
 
 

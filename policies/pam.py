@@ -1175,11 +1175,10 @@ def check_maxsequence(expected_value=3):
         logger.info("[check_maxsequence] Parola maxsequence ayarları kontrol ediliyor...")
 
         conf_files = [PWQUALITY_CONF]
-        conf_d_path = PWQUALITY_DIR
-        if os.path.isdir(conf_d_path):
+        if os.path.isdir(PWQUALITY_DIR):
             conf_files.extend(
-                os.path.join(conf_d_path, f)
-                for f in os.listdir(conf_d_path)
+                os.path.join(PWQUALITY_DIR, f)
+                for f in os.listdir(PWQUALITY_DIR)
                 if f.endswith(".conf")
             )
 
@@ -1189,9 +1188,11 @@ def check_maxsequence(expected_value=3):
             "grep", "-Psi", r"^\s*maxsequence\s*=\s*[0-9]+", *conf_files
         ])
         if success and output:
-            match = re.search(r"maxsequence\s*=\s*(\d+)", output)
-            if match:
-                found_value = int(match.group(1))
+            for line in output.splitlines():
+                match = re.search(r"maxsequence\s*=\s*(\d+)", line)
+                if match:
+                    found_value = int(match.group(1))
+                    break
 
         # PAM içinde hatalı tanım var mı kontrol et
         pam_check = subprocess.run([
@@ -1208,8 +1209,8 @@ def check_maxsequence(expected_value=3):
             return False, "maxsequence parametresi bulunamadı."
         if found_value == 0:
             return False, f"maxsequence={found_value}, 0 olmamalı"
-        if found_value > 3:
-            return False, f"maxsequence={found_value}, 3 veya daha az olmalı"
+        if found_value > expected_value:
+            return False, f"maxsequence={found_value}, {expected_value} veya daha az olmalı"
 
         return True, f"maxsequence={found_value}, CIS uyumlu."
     except Exception as e:
@@ -1223,6 +1224,7 @@ def apply_maxsequence(username=None, param=None):
     """
     try:
         desired_value = int(param.get("value", 3)) if param else 3
+        logger.info(f"[apply_maxsequence] maxsequence {desired_value} olarak uygulanacak...")
 
         ok, msg = check_maxsequence(expected_value=desired_value)
         if ok:
@@ -1237,6 +1239,7 @@ def apply_maxsequence(username=None, param=None):
         # Yeni dosyaya ayar yaz
         with open(PWQUALITY_CONF_D, "w") as f:
             f.write(f"maxsequence = {desired_value}\n")
+
         logger.info(f"[apply_maxsequence] {PWQUALITY_CONF_D} dosyasına maxsequence = {desired_value} yazıldı.")
 
         # PAM modüllerinde uygunsuz tanımları temizle
@@ -1251,7 +1254,8 @@ def apply_maxsequence(username=None, param=None):
                 run_command(["sed", "-ri", r"s/\bmaxsequence\s*=\s*[0-9]+\b//g", file])
                 logger.info(f"[apply_maxsequence] {file} içindeki maxsequence argümanı temizlendi.")
 
-        return True, f"maxsequence {desired_value} olarak ayarlandı ve eski tanımlar temizlendi."
+        return True, f"maxsequence = {desired_value} olarak ayarlandı ve eski tanımlar temizlendi."
+
     except Exception as e:
         msg = f"Hata: {str(e)}"
         logger.error(f"[CIS 5.3.3.2.5][APPLY] {msg}")
@@ -1271,34 +1275,39 @@ def check_dictcheck(expected_value=1):
     try:
         conf_files = [PWQUALITY_CONF]
         if os.path.isdir(PWQUALITY_DIR):
-            for f in os.listdir(PWQUALITY_DIR):
-                if f.endswith(".conf"):
-                    conf_files.append(os.path.join(PWQUALITY_DIR, f))
+            conf_files.extend(
+                os.path.join(PWQUALITY_DIR, f)
+                for f in os.listdir(PWQUALITY_DIR)
+                if f.endswith(".conf")
+            )
 
-        for f in conf_files:
-            if not os.path.isfile(f):
+        # pwquality.conf ve .d dizininde dictcheck=0 var mı?
+        for path in conf_files:
+            if not os.path.isfile(path):
                 continue
-            with open(f, "r") as file:
-                for line in file:
+            with open(path, "r") as f:
+                for line in f:
                     if re.match(r"^\s*dictcheck\s*=\s*0\b", line):
-                        return False, f"{f} içinde dictcheck=0 bulundu."
+                        return False, f"{path} içinde dictcheck=0 bulundu."
 
+        # PAM tanımlarında dictcheck=0 var mı?
         if os.path.isfile(COMMON_PASSWORD):
-            with open(COMMON_PASSWORD, "r") as file:
-                for line in file:
+            with open(COMMON_PASSWORD, "r") as f:
+                for line in f:
                     if "pam_pwquality.so" in line and "dictcheck=0" in line:
                         return False, f"{COMMON_PASSWORD} içinde dictcheck=0 bulundu."
 
+        # Özel dosyada dictcheck=1 tanımı var mı?
         if os.path.isfile(DICTCHECK_CONF):
             with open(DICTCHECK_CONF, "r") as f:
-                content = f.read()
-                match = re.search(r"^\s*dictcheck\s*=\s*(\d+)", content, re.MULTILINE)
+                match = re.search(r"^\s*dictcheck\s*=\s*(\d+)", f.read(), re.MULTILINE)
                 if match and int(match.group(1)) == expected_value:
-                    return True, f"dictcheck = {expected_value} aktif ({DICTCHECK_CONF})"
+                    return True, f"dictcheck = {expected_value} etkin ({DICTCHECK_CONF})"
                 else:
                     return False, f"{DICTCHECK_CONF} içinde dictcheck değeri beklenenden farklı."
 
-        return False, "dictcheck=1 tanımı bulunamadı."
+        # dictcheck=0 bulunmadı ama 1 tanımı da yoksa
+        return False, "dictcheck=1 tanımı açıkça bulunamadı (varsayılan olabilir)."
 
     except Exception as e:
         return False, f"Hata: {e}"
@@ -1306,27 +1315,27 @@ def check_dictcheck(expected_value=1):
 
 def apply_dictcheck(username=None, param=None):
     """
-    CIS 5.3.3.2.6 Remediation
+    CIS 5.3.3.2.6 - Apply
     dictcheck=1 olacak şekilde yapılandırır.
     """
     try:
         expected_value = int(param.get("value", 1)) if param else 1
-
         ok, msg = check_dictcheck(expected_value)
+
         if ok:
             return True, f"Zaten uyumlu: {msg}"
 
         logger.info(f"[apply_dictcheck] Uyumsuz: {msg} → Düzeltiliyor...")
 
-        if os.path.isfile(PWQUALITY_CONF):
-            run_command(["sed", "-ri", r"s/^\s*dictcheck\s*=\s*0\b/# &/", PWQUALITY_CONF])
+        # pwquality.conf ve .d altındaki dictcheck=0 satırlarını yorumla
+        for path in [PWQUALITY_CONF] + [
+            os.path.join(PWQUALITY_DIR, f)
+            for f in os.listdir(PWQUALITY_DIR) if f.endswith(".conf")
+        ] if os.path.isdir(PWQUALITY_DIR) else [PWQUALITY_CONF]:
+            if os.path.isfile(path):
+                run_command(["sed", "-ri", r"s/^\s*dictcheck\s*=\s*0\b/# &/", path])
 
-        if os.path.isdir(PWQUALITY_DIR):
-            for f in os.listdir(PWQUALITY_DIR):
-                if f.endswith(".conf"):
-                    path = os.path.join(PWQUALITY_DIR, f)
-                    run_command(["sed", "-ri", r"s/^\s*dictcheck\s*=\s*0\b/# &/", path])
-
+        # common-password ve pam-configs içindeki dictcheck=0'ları temizle
         if os.path.isfile(COMMON_PASSWORD):
             run_command(["sed", "-ri", r"s/\bdictcheck\s*=\s*0\b//g", COMMON_PASSWORD])
 
@@ -1336,13 +1345,19 @@ def apply_dictcheck(username=None, param=None):
                 run_command(["sed", "-ri", r"s/\bdictcheck\s*=\s*\d+\b//g", f])
                 logger.info(f"[apply_dictcheck] {f} içindeki dictcheck parametresi temizlendi.")
 
+        # Yeni dosyayı oluştur
         os.makedirs(PWQUALITY_DIR, exist_ok=True)
         with open(DICTCHECK_CONF, "w") as f:
             f.write(f"dictcheck = {expected_value}\n")
+
         logger.info(f"[apply_dictcheck] dictcheck={expected_value} olarak ayarlandı ({DICTCHECK_CONF})")
 
+        # Son kontrol
         final_ok, final_msg = check_dictcheck(expected_value)
-        return final_ok, final_msg
+        if final_ok:
+            return True, final_msg
+        else:
+            return False, f"Ayar uygulandı ancak doğrulama başarısız: {final_msg}"
 
     except Exception as e:
         msg = f"Hata: {str(e)}"

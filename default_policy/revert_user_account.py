@@ -13,40 +13,44 @@ from utils import run_command
 
 def revert_password_expiration():
     """
-    CIS 5.4.1.1 - Revert
-    /etc/login.defs dosyasını son yedekten geri yükler
-    ve kullanıcıların PASS_MAX_DAYS ayarlarını eski haline döndürür.
+    CIS 5.4.1.1 - Revert (backup yerine dağıtımın default'ına döndürme)
+    - /etc/login.defs içindeki PASS_MAX_DAYS satırını kaldırır (veya yorumlar).
+    - Böylece paketin/distronun sağladığı default davranış geçerli olur.
+    - NOT: `chage` ile zaten değiştirilmiş kullanıcı bazlı maxdays değerleri otomatik
+      olarak geri alınmaz — bunlar elle düzeltilmelidir.
     """
+    login_defs = "/etc/login.defs"
+    if not os.path.exists(login_defs):
+        logger.warning(f"[CIS 5.4.1.1][REVERT] {login_defs} bulunamadı.")
+        return False, f"{login_defs} bulunamadı."
+
     try:
-        login_defs = "/etc/login.defs"
+        with open(login_defs, "r", encoding="utf-8") as f:
+            lines = f.readlines()
 
-        # Son oluşturulmuş .bak dosyasını bul
-        bak_files = sorted(
-            [f for f in os.listdir("/etc") if f.startswith("login.defs.bak_")],
-            reverse=True
-        )
-        if not bak_files:
-            logger.warning("[CIS 5.4.1.1][REVERT] Geri yükleme için yedek bulunamadı.")
-            return False, "Yedek bulunamadı"
+        # PASS_MAX_DAYS satırlarını tamamen kaldır
+        prog = re.compile(r'^\s*PASS_MAX_DAYS\b', re.IGNORECASE)
+        new_lines = [ln for ln in lines if not prog.match(ln)]
 
-        last_backup = f"/etc/{bak_files[0]}"
+        if len(new_lines) == len(lines):
+            # Hiç değişiklik gerekmedi
+            logger.info("[CIS 5.4.1.1][REVERT] PASS_MAX_DAYS için değişiklik gerekmedi (satır bulunamadı).")
+            return True, "PASS_MAX_DAYS zaten yok veya yorumlanmış."
 
-        # Mevcut dosyayı kaldır, yedeği geri yükle
-        os.remove(login_defs)
-        os.rename(last_backup, login_defs)
-        logger.info(f"[CIS 5.4.1.1][REVERT] {login_defs} dosyası {last_backup} yedeğinden geri yüklendi.")
+        # Dosyayı güvenli şekilde güncelle
+        temp_path = login_defs + ".tmp"
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+        os.replace(temp_path, login_defs)  # atomic-ish replacement
 
-        # Kullanıcıların ayarlarını geri almak pratikte mümkün değil
-        # çünkü `chage` ile yapılan değişikliklerin eski değeri saklanmıyor.
-        # Sadece login.defs revert edilir.
-        logger.warning("[CIS 5.4.1.1] Kullanıcı bazlı PASS_MAX_DAYS geri alınamıyor. "
-                       "Sadece login.defs geri yüklendi.")
+        logger.info(f"[CIS 5.4.1.1][REVERT] {login_defs} içindeki PASS_MAX_DAYS satırları kaldırıldı. Sistem default'una dönüldü.")
+        logger.warning("[CIS 5.4.1.1] Kullanıcı bazlı chage değerleri otomatik geri alınamaz; gerekiyorsa manuel düzeltme yapın.")
 
-        return True, f"{login_defs} yedekten geri yüklendi."
+        return True, "PASS_MAX_DAYS kaldırıldı; dağıtımın default davranışına dönüldü."
 
     except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"[REVERT] {msg}")
+        msg = f"Hata: {e}"
+        logger.error(f"[CIS 5.4.1.1][REVERT] {msg}")
         return False, msg
 
 
@@ -180,13 +184,13 @@ def revert_inactive_password_lock(username=None, param=None):
     """
     CIS 5.4.1.5
     INACTIVE değerini revert eder.
-    Varsayılan revert değeri: 99999 gün (sınırsıza yakın).
+    Debian varsayılanı: -1 (hiç devre dışı bırakma)
     """
     try:
-        revert_days = (param or {}).get("revert_days", 99999)
+        revert_days = str((param or {}).get("revert_days", -1))
 
-        # Yeni kullanıcılar için default revert
-        run_command(["useradd", "-D", "-f", str(revert_days)])
+        # Yeni kullanıcılar için varsayılan revert
+        run_command(["useradd", "-D", "-f", revert_days])
 
         # Mevcut kullanıcılar için revert
         with open("/etc/shadow", "r") as f:
@@ -197,7 +201,7 @@ def revert_inactive_password_lock(username=None, param=None):
                 user, passwd = parts[0], parts[1]
                 if not passwd.startswith("$"):  # sadece şifreli hesaplar
                     continue
-                run_command(["chage", "--inactive", str(revert_days), user])
+                run_command(["chage", "--inactive", revert_days, user])
 
         logger.info(f"[CIS 5.4.1.5][REVERT] INACTIVE {revert_days} gün olarak revert edildi.")
         return True, f"INACTIVE revert edildi -> {revert_days} gün"
@@ -312,29 +316,82 @@ def revert_ensure_nologin_not_in_shells():
 
 
 
-def revert_ensure_shell_timeout():
+def revert_ensure_shell_timeout(username=None, param=None):
     """
-    [REVERT][5.4.3.2] Bu madde için revert uygulanmaz.
-    CIS'e göre TMOUT zorunlu olarak yapılandırılmalıdır.
+    [REVERT][5.4.3.2] Revert default user shell timeout (TMOUT) configuration.
+    
+    CIS 5.4.3.2 Apply metodu ile /etc/profile.d/timeout.sh dosyasına eklenen
+    TMOUT, readonly TMOUT ve export TMOUT satırlarını geri alır.
+
+    Geri yükleme seçenekleri:
+        param["mode"] = "remove"  -> Dosyayı tamamen siler. (default)
+        param["mode"] = "comment" -> Satırları yorum satırı haline getirir.
     """
-    logger.info("[CIS 5.4.3.2][REVERT] (pass).")
-    pass
+    try:
+        timeout_file = "/etc/profile.d/timeout.sh"
+        mode = (param or {}).get("mode", "remove")
+
+        if not os.path.exists(timeout_file):
+            logger.info("[REVERT][5.4.3.2] timeout.sh dosyası bulunamadı, işlem gerekmedi.")
+            return True, "timeout.sh zaten yoktu, işlem gerekmedi."
+
+        if mode == "remove":
+            os.remove(timeout_file)
+            logger.info(f"[REVERT][5.4.3.2] {timeout_file} dosyası silindi (TMOUT devre dışı bırakıldı).")
+            return True, f"{timeout_file} dosyası silindi ve TMOUT revert edildi."
+
+        elif mode == "comment":
+            new_lines = []
+            with open(timeout_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if any(kw in line for kw in ["TMOUT", "readonly TMOUT", "export TMOUT"]):
+                        if not line.strip().startswith("#"):
+                            new_lines.append("# " + line)
+                        else:
+                            new_lines.append(line)
+                    else:
+                        new_lines.append(line)
+
+            with open(timeout_file, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+
+            logger.info(f"[REVERT][5.4.3.2] {timeout_file} içindeki TMOUT satırları yorum satırına alındı.")
+            return True, f"{timeout_file} içindeki TMOUT satırları yorum satırına alındı."
+
+        else:
+            logger.error(f"[REVERT][5.4.3.2] Geçersiz mode parametresi: {mode}")
+            return False, f"Geçersiz mode parametresi: {mode}"
+
+    except Exception as e:
+        msg = f"Hata: {str(e)}"
+        logger.error(f"[REVERT][5.4.3.2] Hata oluştu: {msg}")
+        return False, msg
+
 
 def revert_umask():
     """
     [REVERT][5.4.3.3] Ensure default user umask is configured
-    Uygulanan umask ayarını geri alır (eklenen dosyayı siler).
+    Debian default (hiç umask tanımı olmayan) hale döner.
     """
     try:
         config_file = "/etc/profile.d/50-systemwide_umask.sh"
+
+        # 1️⃣ apply ile oluşturulan dosyayı sil
         if os.path.exists(config_file):
             os.remove(config_file)
-            logger.info(f"[CIS 5.4.3.3][REVERT] {config_file} dosyası silindi, umask revert edildi.")
-            return True, f"{config_file} silindi, umask revert edildi."
-        else:
-            logger.info(f"[CIS 5.4.3.3][REVERT] {config_file} zaten yok, yapılacak işlem yok.")
-            return True, "Zaten revert durumda."
+            logger.info(f"[CIS 5.4.3.3][REVERT] {config_file} silindi.")
+
+        # 2️⃣ /etc/profile ve /etc/login.defs içinde eklenmiş umask satırlarını kaldır
+        for path in ["/etc/profile", "/etc/login.defs"]:
+            if not os.path.exists(path):
+                continue
+            run_command(["bash", "-c", f"sed -i '/^umask [0-9][0-9][0-9]/d' {path}"])
+            logger.info(f"[CIS 5.4.3.3][REVERT] {path} içindeki aktif umask satırları kaldırıldı.")
+
+        logger.info("[CIS 5.4.3.3][REVERT] Sistem Debian default (yorumlu) duruma döndürüldü.")
+        return True, "Umask Debian varsayılanına (yorumlu) döndürüldü."
+
     except Exception as e:
         msg = f"Hata: {str(e)}"
-        logger.error(f"[CIS 5.4.3.3][REVERT] Umask revert sırasında hata: {msg}")
+        logger.error(f"[CIS 5.4.3.3][REVERT] Hata: {msg}")
         return False, msg

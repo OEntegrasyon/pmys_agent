@@ -615,7 +615,12 @@ def revert_sshd_ignorerhosts():
         msg = f"Hata: {str(e)}"
         logger.error(f"[CIS 5.1.11][REVERT] {msg}")
         return False, f"Revert sırasında hata: {msg}"
-
+        
+WEAK_KEX_ALGORITHMS = [
+    "diffie-hellman-group1-sha1",
+    "diffie-hellman-group14-sha1",
+    "diffie-hellman-group-exchange-sha1",
+]
 
 def revert_sshd_kexalgorithms():
     """
