@@ -9,14 +9,12 @@ from utils import run_command;
 # Kullanıcıya belirli komutlar için kısıtlı sudo yetkisi ver#
 
 def check_restrict_sudo_commands(username, parameters):
-    # --- DÜZELTME BAŞLANGICI ---
     commands_param = parameters.get("commands", [])
     # Gelen parametrenin tek bir string mi yoksa liste mi olduğunu kontrol et
     if isinstance(commands_param, str):
-        commands = [commands_param] # Eğer string ise, onu tek elemanlı bir listeye çevir
+        commands = [commands_param] 
     else:
-        commands = commands_param # Zaten liste ise, olduğu gibi kullan
-    # --- DÜZELTME BİTTİ ---
+        commands = commands_param 
 
     if not commands:
         return False, "Parametrelerde 'commands' listesi boş olamaz."
@@ -40,13 +38,11 @@ def check_restrict_sudo_commands(username, parameters):
         return False, f"Sudo yetki dosyası okunurken hata: {e}"
 
 def apply_restrict_sudo_commands(username, parameters):
-    # --- DÜZELTME BAŞLANGICI ---
     commands_param = parameters.get("commands", [])
     if isinstance(commands_param, str):
         commands = [commands_param]
     else:
         commands = commands_param
-    # --- DÜZELTME BİTTİ ---
 
     config_file_path = f"/etc/sudoers.d/{username}-restricted"
     commands_str = ", ".join(commands)
@@ -61,7 +57,6 @@ def apply_restrict_sudo_commands(username, parameters):
         if not check_success:
             return False, f"Oluşturulan sudo kuralı sentaks kontrolünü geçemedi: {check_output}"
 
-        # ... (fonksiyonun geri kalanı aynı) ...
         move_success, move_output = run_command(["sudo", "mv", temp_path, config_file_path])
         if not move_success:
             return False, f"Doğrulanmış sudo dosyası taşınamadı: {move_output}"
@@ -78,13 +73,12 @@ def apply_restrict_sudo_commands(username, parameters):
 # Parolasız Sudo Policies
 #---------------------------------------------------------------------------
 def check_nopasswd_sudo_commands(username, parameters):
-    # --- DÜZELTME BAŞLANGICI ---
     commands_param = parameters.get("commands", [])
     if isinstance(commands_param, str):
         commands = [commands_param]
     else:
         commands = commands_param
-    # --- DÜZELTME BİTTİ ---
+
 
     if not commands:
         return False, "Parametrelerde 'commands' listesi boş olamaz."
@@ -108,13 +102,11 @@ def check_nopasswd_sudo_commands(username, parameters):
         return False, f"Sudo yetki dosyası okunurken hata: {e}"
 
 def apply_nopasswd_sudo_commands(username, parameters):
-    # --- DÜZELTME BAŞLANGICI ---
     commands_param = parameters.get("commands", [])
     if isinstance(commands_param, str):
         commands = [commands_param]
     else:
         commands = commands_param
-    # --- DÜZELTME BİTTİ ---
     
     config_file_path = f"/etc/sudoers.d/{username}-nopasswd"
     commands_str = ", ".join(commands)
@@ -129,7 +121,6 @@ def apply_nopasswd_sudo_commands(username, parameters):
         if not check_success:
             return False, f"Oluşturulan NOPASSWD kuralı sentaks kontrolünü geçemedi: {check_output}"
 
-        # ... (fonksiyonun geri kalanı aynı) ...
         move_success, move_output = run_command(["sudo", "mv", temp_path, config_file_path])
         if not move_success:
             return False, f"Doğrulanmış NOPASSWD dosyası taşınamadı: {move_output}"
@@ -250,7 +241,6 @@ def apply_sudo_logfile_config(username, parameters):
             os.remove(temp_path)
             return False, f"Oluşturulan sudo log kuralı sentaks kontrolünü geçemedi: {check_output}"
 
-        # 3. Sentaks doğruysa, dosyayı asıl yerine taşı.
         move_success, move_output = run_command(["sudo", "mv", temp_path, config_file_path])
         if not move_success:
             os.remove(temp_path)
