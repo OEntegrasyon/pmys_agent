@@ -20,17 +20,19 @@ def login_detection(conn_params, uuid):
     while True:
         temp_user = get_logged_in_user()
         if temp_user is not None and temp_user != last_user:
-            current_logged_in_user = temp_user
-            logger.info(f"Yeni kullanıcı algılandı: {current_logged_in_user}")
+            logger.info(f"Yeni kullanıcı girişi algılandı: {temp_user}.")
+            logger.info("Giriş anında revert atlanıyor (Çıkışta revert yapıldı).")
 
-            # revert_all_policies()
-            
-            login_notify(current_logged_in_user, conn_params, uuid)
-            last_user = temp_user
+            login_notify(temp_user, conn_params, uuid)
+            last_user = temp_user 
+        
+
         elif temp_user is None and last_user is not None:
-            current_logged_in_user = None
+            logger.info(f"Kullanıcı {last_user} oturumu kapattı/değiştirdi. Çıkış işlemi olarak revert yapılıyor.")
+        
+            default_policy.restore_all_to_default()
             last_user = None
-            logger.info("Kullanıcı çıkış yaptı veya algılanamıyor.")
+ 
 
         time.sleep(3)
 

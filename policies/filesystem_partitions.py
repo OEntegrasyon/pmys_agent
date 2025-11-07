@@ -32,7 +32,7 @@ def apply_tmp_as_tmpfs():
     temp_path = "/tmp/fstab.new.tmpfs"
     backup_path = f"/etc/fstab.bak_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     tmpfs_line = "tmpfs /tmp tmpfs defaults,rw,nosuid,nodev,noexec,size=2G 0 0\n"
-    comment_line = "# GPOS Agent tarafindan eklendi: /tmp icin tmpfs\n"
+    comment_line = "# Agent tarafindan eklendi: /tmp icin tmpfs\n"
     
     try:
         if not os.path.exists(fstab_path):
@@ -47,7 +47,7 @@ def apply_tmp_as_tmpfs():
             if line.strip().startswith('#'):
                 continue
             parts = re.split(r'\s+', line.strip())
-            if len(parts) > 1 and (parts[1] == "/tmp" or parts[0] == "tmpfs"):
+            if len(parts) > 1 and parts[1] == "/tmp":
                 found = True
                 break
         

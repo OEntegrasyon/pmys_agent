@@ -7,20 +7,24 @@ from utils import run_command
 
 def revert_sudo_settings():
     """
-    Sistem açılışında, ajan tarafından /etc/sudoers.d/ altına eklenmiş olan
-    KULLANICI BAZLI ('{username}-restricted', '{username}-nopasswd', vb.)
-    yapılandırma dosyalarını kaldırır.
-    
-    SİSTEM GENELİ ('01-sudo-logging') kurallara dokunmaz.
+    Sistem açılışında,  (CIS) politikası tarafından /etc/sudoers.d/ altına 
+    eklenmiş olan SİSTEM GENELİ ('01-sudo-logging') ve KULLANICI BAZLI 
+    ('{username}-restricted', vb.) yapılandırma dosyalarını kaldırır.
     """
-    logger.info("[DEFAULT] Sudo ayarları (kullanıcı bazlı) geri alınıyor...")
+    logger.info("[DEFAULT] Sudo ayarları (Sistem Geneli ve Kullanıcı Bazlı) geri alınıyor...")
     
     sudoers_dir = "/etc/sudoers.d/"
     
-
+    # Korunması gereken, sistemin orijinalinde olan dosyalar.
+    # '01-sudo-logging' bu listeden çıkarıldı çünkü o CIS tarafından eklendi.
     baseline_files_to_keep = {
-        "01-sudo-logging", 
-        "README"           
+        "README" 
+    }
+
+
+    policy_files_to_remove = {
+        "01-sudo-logging"
+        # Başka bir sistem geneli politika dosyası eklediyseniz buraya ekleyin
     }
 
     dynamic_suffixes_to_remove = (
@@ -35,24 +39,38 @@ def revert_sudo_settings():
 
     try:
         for filename in os.listdir(sudoers_dir):
+            file_path = os.path.join(sudoers_dir, filename)
             
+            # 1. Korumamız gereken temel dosyalara dokunma
             if filename in baseline_files_to_keep:
-                logger.info(f"[DEFAULT] Baseline (Sistem Geneli) kuralı '{filename}' korundu (silinmedi).")
+                logger.info(f"[DEFAULT] Baseline kuralı '{filename}' korundu (silinmedi).")
                 continue 
 
-            if filename.endswith(dynamic_suffixes_to_remove):
-                file_path = os.path.join(sudoers_dir, filename)
-                try:
-                    logger.info(f"[DEFAULT] Ajan tarafından oluşturulan KULLANICI kuralı '{file_path}' kaldırılıyor...")
-                    success, output = run_command(['sudo', 'rm', '-f', file_path])
-                    if not success:
-                        logger.error(f"[DEFAULT] '{file_path}' silinirken hata: {output}")
-                except Exception as e:
-                    logger.error(f"[DEFAULT] '{file_path}' işlenirken hata: {e}")
-            else:
-                logger.info(f"[DEFAULT] GPOS tarafından yönetilmeyen dosya '{filename}' atlandı (korundu).")
+            # 2. Silinmesi gereken politika dosyalarını sil
+            if filename in policy_files_to_remove:
+                logger.info(f"[DEFAULT] SİSTEM GENELİ politika kuralı '{file_path}' kaldırılıyor...")
+                _delete_sudoer_file(file_path)
+                continue
 
-        logger.info("[DEFAULT] Sudo (kullanıcı bazlı) ayarlar için temizlik tamamlandı.")
+            # 3. Dinamik (kullanıcı bazlı) politika dosyalarını sil
+            if filename.endswith(dynamic_suffixes_to_remove):
+                logger.info(f"[DEFAULT] KULLANICI kuralı '{file_path}' kaldırılıyor...")
+                _delete_sudoer_file(file_path)
+                continue
+            
+            # 4. Yukarıdaki kurallara uymayanları koru
+            logger.info(f"[DEFAULT]   dosya '{filename}' atlandı (korundu).")
+
+        logger.info("[DEFAULT] Sudo (Sistem Geneli ve Kullanıcı Bazlı) temizlik tamamlandı.")
         
     except Exception as e:
         logger.error(f"[DEFAULT] Sudo ayarları geri alınırken genel bir hata oluştu: {e}")
+
+def _delete_sudoer_file(file_path):
+    """Verilen sudoers dosyasını siler."""
+    try:
+        success, output = run_command(['sudo', 'rm', '-f', file_path])
+        if not success:
+            logger.error(f"[DEFAULT] '{file_path}' silinirken hata: {output}")
+    except Exception as e:
+        logger.error(f"[DEFAULT] '{file_path}' silinirken istisna: {e}")

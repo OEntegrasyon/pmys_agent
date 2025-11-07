@@ -5,7 +5,6 @@ from logger import logger
 # Fonksiyon isimlerinin tutarlı olması, kodu daha okunabilir kılar.
 from .revert_apparmor_settings import revert_apparmor_settings
 from .revert_login_banners import revert_login_banners
-from .revert_bootloader_settings import revert_bootloader_settings
 from .revert_filesystem_kernels import revert_disabled_modules
 from .revert_file_permissions_and_ownership import revert_file_permissions_and_ownership
 from .revert_interface_protocols import revert_interface_protocols
@@ -123,7 +122,6 @@ def restore_all_to_default():
     # Adım 2: Import edilen tüm fonksiyonları sırayla ve güvenli bir şekilde çağır.
     _revert_safely(revert_apparmor_settings, "AppArmor")
     _revert_safely(revert_login_banners, "Login Banners")
-    _revert_safely(revert_bootloader_settings, "Bootloader Settings")
     _revert_safely(revert_disabled_modules, "Kernel Module Disabling")
     _revert_safely(revert_file_permissions_and_ownership, "File Permissions & Ownership")
     _revert_safely(revert_interface_protocols, "Interface/Protocol Disabling")

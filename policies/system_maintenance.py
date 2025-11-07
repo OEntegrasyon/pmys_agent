@@ -183,7 +183,7 @@ def audit_and_fix_unowned_files(username, parameters):
     try:
         # CIS raporundaki hariç tutulan yollar 
         exclude_paths = [
-            "/proc", "/sys", "/run", "/snap", "/dev"
+            "/proc", "/sys", "/run", "/snap", "/dev", "/home"
         ]
         prune_args = []
         for path in exclude_paths:

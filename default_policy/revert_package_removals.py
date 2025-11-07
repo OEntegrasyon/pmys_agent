@@ -13,10 +13,7 @@ def revert_services_settings():
     _revert_package_removals()
 
 PACKAGES_TO_REINSTALL = [
-    "telnet",
-    "nis",
-    "rsh-client",
-    "talk"
+    "inetutils-telnetd"
 ]
 
 def _revert_package_removals():
@@ -72,7 +69,6 @@ def _revert_autofs_service():
         if success and "masked" in output:
             logger.info(f"[DEFAULT] '{service_name}' maskelenmiş, maske kaldırılıyor...")
             run_command(['sudo', 'systemctl', 'unmask', service_name])
-            run_command(['sudo', 'systemctl', 'enable', '--now', service_name])
             logger.info(f"[DEFAULT] '{service_name}' servisi başarıyla yeniden etkinleştirildi.")
             return
 

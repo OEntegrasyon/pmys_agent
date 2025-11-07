@@ -60,7 +60,7 @@ def revert_process_hardening():
 
 
     # ==========================================================================
-    # 2. limits.d (.conf) dosyasını kaldır (DÜZELTİLMİŞ KISIM)
+    # 2. limits.d (.conf) dosyasını kaldır 
     # ==========================================================================
     
     limits_path_to_remove = "/etc/security/limits.d/99-coredump-hardening.conf"

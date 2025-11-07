@@ -2,6 +2,7 @@ import os
 import re
 import subprocess
 from datetime import datetime
+from logger import logger
 from utils import get_logged_in_user, get_desktop_env, run_command
 
 
@@ -126,6 +127,91 @@ def apply_apparmor_to_grub(config_path, current_content, current_cmdline):
     except subprocess.CalledProcessError as e:
         return False, f"GRUB güncellenirken hata: {e}. sudoers dosyasını kontrol edin."
 
+#-----------------------------------------------------------------------
+# Grub ta Apparmoru disable et
+
+def apply_disable_apparmor_grub(username, parameters):
+    """
+    POLİTİKA: AppArmor'u GRUB önyükleyicisinden kaldırır.
+
+    Bu politika, 'enforce_apparmor_in_bootloader' (Politika 2) tarafından
+    /etc/default/grub dosyasına eklenen 'apparmor=1' ve 'security=apparmor'
+    parametrelerini temizler ve GRUB'u günceller.
+
+    UYARI: Bu, GRUB yapılandırmasını değiştiren ve 'update-grub'
+    komutunu çalıştıran YÜKSEK RİSKLİ bir işlemdir.
+    """
+    
+    logger.info(f"[POLICY] AppArmor, GRUB önyükleyicisinden devre dışı bırakılıyor (Kullanıcı: {username})...")
+    
+    grub_file_path = "/etc/default/grub"
+    grub_temp_path = f"/tmp/grub.disable-apparmor.temp"
+    changes_found = False
+    
+    if not os.path.exists(grub_file_path):
+        return False, f"GRUB yapılandırma dosyası bulunamadı: {grub_file_path}"
+        
+    try:
+        # 1. GRUB dosyasını oku ve parametreleri kaldır
+        with open(grub_file_path, 'r') as f_in, open(grub_temp_path, 'w') as f_out:
+            for line in f_in:
+                # Sadece ilgili satırı düzenle
+                if line.strip().startswith("GRUB_CMDLINE_LINUX_DEFAULT="):
+                    original_line = line
+                    
+                    # Parametreleri kaldır
+                    line = line.replace("apparmor=1", "")
+                    line = line.replace("security=apparmor", "")
+                    
+                    # Oluşabilecek çift boşlukları tek boşluğa indir
+                    line = re.sub(r'\s+', ' ', line)
+                    
+                    # Tırnak içindeki " " boşluklarını düzelt (örn: " quiet")
+                    line = line.replace('=" ', '="')
+                    
+                    if original_line != line:
+                        changes_found = True
+                        logger.info(f"[POLICY] GRUB satırı bulundu. Orijinal: {original_line.strip()}")
+                        logger.info(f"[POLICY] GRUB satırı güncellendi. Yeni: {line.strip()}")
+                
+                f_out.write(line)
+
+        # Eğer değişiklik bulunamadıysa, dosya zaten varsayılan durumdadır.
+        if not changes_found:
+            logger.info("[POLICY] GRUB yapılandırmasında AppArmor parametreleri zaten yok (Varsayılan durum).")
+            # Geçici dosyayı sil
+            os.remove(grub_temp_path)
+            return True, "AppArmor, GRUB'da zaten devre dışı görünüyor."
+
+        # 2. Geçici dosyayı orijinal dosyanın üzerine yaz (sudo ile)
+        move_cmd = ['sudo', 'mv', grub_temp_path, grub_file_path]
+        success, output = run_command(move_cmd)
+        if not success:
+            logger.error(f"[POLICY] GRUB dosyası güncellenirken hata (mv): {output}")
+            return False, f"GRUB dosyası güncellenemedi: {output}"
+            
+        # 3. Dosyanın sahipliğini ve izinlerini düzelt
+        run_command(['sudo', 'chown', 'root:root', grub_file_path])
+        run_command(['sudo', 'chmod', '644', grub_file_path])
+
+        # 4. update-grub komutunu çalıştır
+        logger.info("[POLICY] GRUB yapılandırması güncelleniyor (update-grub)... Bu işlem biraz sürebilir.")
+        update_cmd = ['sudo', 'update-grub']
+        success, output = run_command(update_cmd)
+        
+        if not success:
+            logger.error(f"[POLICY] 'update-grub' çalıştırılırken KRİTİK HATA: {output}")
+            return False, f"'update-grub' çalıştırılırken kritik hata: {output}"
+
+        logger.info("[POLICY] AppArmor, GRUB yapılandırmasından başarıyla kaldırıldı. Değişiklikler bir sonraki yeniden başlatmada tam olarak etkinleşecektir.")
+        return True, "AppArmor, GRUB'dan başarıyla devre dışı bırakıldı."
+
+    except Exception as e:
+        logger.error(f"[POLICY] GRUB ayarları geri alınırken genel hata: {e}")
+        # Geçici dosyayı temizle
+        if os.path.exists(grub_temp_path):
+            os.remove(grub_temp_path)
+        return False, f"GRUB ayarları geri alınırken istisna oluştu: {e}"
 
 # ------------------------------------------------------------------------------
 # Politika 3: Tüm AppArmor Profillerini Enforce veya Complain Modunda oldupundan emin ol

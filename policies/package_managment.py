@@ -301,8 +301,7 @@ def audit_pending_updates(username, parameters):
 
         # 3. Adım: Çıktıyı analiz et     
         lines = output.strip().splitlines()
-        package_lines = [line for line in lines if not line.strip().startswith('Listing...') and not line.strip().startswith('Listeleniyor...') and not line.strip().startswith('WARNING:')]
-        
+        package_lines = [line for line in lines if not line.strip().startswith('Listing...') and not line.strip().startswith('Listeleme...') and not line.strip().startswith('WARNING:')]        
         package_count = len(package_lines)
 
         if package_count == 0:

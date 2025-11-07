@@ -1,6 +1,7 @@
 import os
 import subprocess
 from datetime import datetime
+from logger import logger
 from utils import get_logged_in_user, get_desktop_env, run_command
 import stat
 
@@ -94,6 +95,81 @@ EOF
     except Exception as e:
         return False, f"Bootloader parolası uygulanırken hata: {e}"
 
+#--------------------------------------------------------------------
+# --------Grub paswordu disable etme politkası ---------------------------------
+
+def apply_disable_grub_password(username, parameters):
+    """
+    CIS politikası tarafından ayarlanmış olan GRUB parolasını
+    kaldırır. Bu işlem, /etc/grub.d/01_security dosyasını siler,
+    10_linux dosyasındaki '--unrestricted' bayrağını temizler
+    ve 'update-grub' komutunu çalıştırır.
+
+    UYARI: Bu, GRUB yapılandırmasını değiştiren riskli bir işlemdir.
+    """
+    logger.info("[POLICY] GRUB parolası devre dışı bırakılıyor...")
+    
+    auth_file_path = "/etc/grub.d/01_security"
+    linux_config_path = "/etc/grub.d/10_linux"
+    
+    changes_made = False
+
+    # 1. 'apply' tarafından oluşturulan parola dosyasını sil
+    try:
+        if os.path.exists(auth_file_path):
+            logger.info(f"[POLICY] GRUB parola dosyası '{auth_file_path}' kaldırılıyor...")
+            success, output = run_command(['sudo', 'rm', '-f', auth_file_path])
+            if success:
+                changes_made = True
+            else:
+                logger.error(f"[POLICY] '{auth_file_path}' silinirken hata: {output}")
+        else:
+             logger.info(f"[POLICY] GRUB parola dosyası '{auth_file_path}' zaten yok.")
+    except Exception as e:
+        logger.error(f"[POLICY] '{auth_file_path}' silinirken istisna: {e}")
+
+    # 2. 'apply' tarafından 10_linux'e eklenen '--unrestricted' bayrağını kaldır
+    try:
+        if os.path.exists(linux_config_path):
+            logger.info(f"[POLICY] '{linux_config_path}' dosyasından '--unrestricted' bayrağı temizleniyor...")
+    
+            sed_revert_cmd = [
+                'sudo', 'sed', '-i',
+                's/ --unrestricted//g',
+                linux_config_path
+            ]
+            
+            success, output = run_command(sed_revert_cmd)
+            if success:
+                changes_made = True 
+            else:
+                logger.error(f"[POLICY] '{linux_config_path}' temizlenirken hata: {output}")
+        
+        else:
+            logger.warning(f"[POLICY] '{linux_config_path}' bulunamadı, --unrestricted temizlenemedi.")
+
+    except Exception as e:
+        logger.error(f"[POLICY] '{linux_config_path}' revert edilirken istisna: {e}")
+
+    # 3. Eğer 1. veya 2. adımda bir değişiklik yapıldıysa 'update-grub' çalıştır
+    if changes_made:
+        try:
+            logger.info("[POLICY] GRUB yapılandırması yeniden oluşturuluyor (update-grub)...")
+            success, output = run_command(['sudo', 'update-grub'])
+            if not success:
+                error_msg = f"'update-grub' çalıştırılırken hata: {output}"
+                logger.error(f"[POLICY] {error_msg}")
+                return False, error_msg
+            else:
+                logger.info("[POLICY] 'update-grub' başarıyla tamamlandı.")
+        except Exception as e:
+            error_msg = f"'update-grub' çalıştırılırken istisna: {e}"
+            logger.error(f"[POLICY] {error_msg}")
+            return False, error_msg
+            
+    success_msg = "GRUB parolasını devre dışı bırakma işlemi tamamlandı."
+    logger.info(f"[POLICY] {success_msg}")
+    return True, success_msg
 # --------------------------------------------------------------------------------
 
 #  Bootloader Yapılandırma İzinlerini Sıkılaştır

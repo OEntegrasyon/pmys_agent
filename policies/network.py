@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -18,28 +19,41 @@ def check_network_module_disabled(username, parameters):
     if not module_name:
         return False, "Politika hatası: 'module_name' parametresi belirtilmemiş."
 
-    rule_path = f"/etc/modprobe.d/{module_name}-blacklist.conf"
-    
+    module_name = module_name.replace('-','_')    
     try:
-        lsmod_process = subprocess.run(['lsmod'], capture_output=True, text=True, check=True)
-        is_loaded = module_name in lsmod_process.stdout
+        lsmod_success, lsmod_output = run_command(['lsmod'])
+        if not lsmod_success:
+            return False, "lsmod komutu çalıştırılamadı. "
         
-        rules_correct = False
-        if os.path.exists(rule_path):
-            with open(rule_path, "r") as f:
-                content = f.read()
-                # Her iki kuralın da (doğru olanların) dosyada olmasını bekle
-                if f"install {module_name} /bin/false" in content and f"blacklist {module_name}" in content:
-                    rules_correct = True
+        modprobe_config_success, modprobe_config_output = run_command(['modprobe', '--showconfig'])
 
-        if not is_loaded and rules_correct:
-            return True, f"{module_name} modülü zaten devre dışı bırakılmış (Uyumlu)."
-        else:
-            if is_loaded:
-                print(f"Denetim Başarısız: '{module_name}' modülü o an yüklü.")
-            if not rules_correct:
-                print(f"Denetim Başarısız: '{rule_path}' dosyasındaki kurallar eksik veya yanlış.")
+        if not modprobe_config_success:
+            return False, "modprobe --showconfig komutu çalıştırılamadı."
+        
+        install_check_success, install_check_output = run_command(['modprobe', '-n', '-v', module_name])
+        if not install_check_success:
+             return False, f"modprobe -n -v {module_name} komutu çalıştırılamadı."
+
+        is_compliant = True 
+
+        if re.search(r"^\s*" + re.escape(module_name) + r"\s+", lsmod_output, re.MULTILINE):
+            print(f"Denetim Başarısız: '{module_name}' modülü o an yüklü.")
+            is_compliant = False
+
+        # Kontrol B: Modül kara listeye (blacklist) alınmış mı?
+        if not re.search(r"^\s*blacklist\s+" + re.escape(module_name) + r"\b", modprobe_config_output, re.MULTILINE):
+            print(f"Denetim Başarısız: '{module_name}' modülü 'modprobe --showconfig' çıktısında kara listeye alınmamış.")
+            is_compliant = False
             
+        # Kontrol C: Modülün yüklenmesi engellenmiş mi (install ... /bin/false)?
+        if not re.search(r"^\s*install\s+(/bin/true|/bin/false)\b", install_check_output, re.MULTILINE):
+            print(f"Denetim Başarısız: '{module_name}' modülü 'install /bin/false' (veya /bin/true) kuralına sahip değil.")
+            is_compliant = False
+        
+        if is_compliant:
+            return True, f"'{module_name}' modülü zaten devre dışı bırakılmış (Uyumlu)."
+        else:
+            print(f"Denetim: '{module_name}' için kurallar eksik veya modül yüklü. Düzeltme uygulanacak...")
             return apply_network_module_disabled(module_name)
 
     except Exception as e:
@@ -90,8 +104,10 @@ def disable_wireless_interfaces(username, parameters):
     """
     Sistemdeki kablosuz modülleri tespit eder ve 
     CIS 3.1.2'ye uygun olarak devre dışı bırakılıp bırakılmadığını DENETLER.
-    """
     
+    Bu fonksiyon, sistemin GERÇEK (çalışan ve yapılandırılmış) durumunu
+    lsmod ve modprobe komutlarını kullanarak denetler.
+    """
     # Adım 1: Aktif kablosuz modüllerini tespit et
     wireless_modules = set()
     try:
@@ -108,7 +124,7 @@ def disable_wireless_interfaces(username, parameters):
                 module_path = os.path.realpath(driver_link)
                 module_name = os.path.basename(module_path)
                 wireless_modules.add(module_name)
-    
+        
         if not wireless_modules:
             return True, "Kablosuz donanım bulundu ancak ilişkili modül tespit edilemedi (Uyumlu)."
 
@@ -116,53 +132,53 @@ def disable_wireless_interfaces(username, parameters):
         return False, f"Kablosuz modüller tespit edilirken hata: {e}"
 
     # Adım 2: DENETİM (Audit)
-    # Tespit edilen modüllerin durumu (yüklü mü, kurallar eksik mi) kontrol edilir.
-    is_compliant = True # Varsayılan olarak uyumlu kabul et
-    modules_to_fix = set()
+    all_compliant = True 
     
     try:
-        # Kural dosyasının içeriğini oku
-        config_content = ""
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, 'r') as f:
-                config_content = f.read()
-        else:
-            # Kural dosyası yoksa, tüm modüller uyumsuz demektir.
-            is_compliant = False
-
-        # 1. Modül o an yüklü mü?
         lsmod_success, lsmod_output = run_command(['lsmod'])
         if not lsmod_success:
             return False, "lsmod komutu çalıştırılamadı."
 
+        modprobe_config_success, modprobe_config_output = run_command(['modprobe', '--showconfig'])
+        if not modprobe_config_success:
+            return False, "modprobe --showconfig komutu çalıştırılamadı."
+
         for module in wireless_modules:
-            # 1. Kontrol: Modül o an yüklü mü?
-            if module in lsmod_output:
-                is_compliant = False
-                modules_to_fix.add(module)
+            module_is_ok = True 
+
+            if re.search(r"^\s*" + re.escape(module) + r"\s+", lsmod_output, re.MULTILINE):
+                print(f"Denetim Başarısız: '{module}' modülü o an yüklü.")
+                all_compliant = False
+                module_is_ok = False 
+
+            if not re.search(r"^\s*blacklist\s+" + re.escape(module) + r"\b", modprobe_config_output, re.MULTILINE):
+                print(f"Denetim Başarısız: '{module}' modülü 'modprobe --showconfig' çıktısında kara listeye alınmamış.")
+                all_compliant = False
+                module_is_ok = False 
+
+            install_check_success, install_check_output = run_command(['modprobe', '-n', '-v', module])
+            if not install_check_success:
+                 return False, f"modprobe -n -v {module} komutu çalıştırılamadı."
             
-            # 2. Kontrol: Kural dosyasında 'blacklist' kuralı var mı?
-            if f"blacklist {module}" not in config_content:
-                is_compliant = False
-                modules_to_fix.add(module)
-                
-            # 3. Kontrol: Kural dosyasında 'install /bin/false' kuralı var mı?
-            if f"install {module} /bin/false" not in config_content:
-                is_compliant = False
-                modules_to_fix.add(module)
+            if not re.search(r"^\s*install\s+(/bin/true|/bin/false)\b", install_check_output, re.MULTILINE):
+                print(f"Denetim Başarısız: '{module}' modülü 'install /bin/false' (veya /bin/true) kuralına sahip değil.")
+                all_compliant = False
+                module_is_ok = False 
+
+            if module_is_ok:
+                 print(f"Denetim Başarılı: '{module}' modülü tüm kurallara uyuyor.")
 
     except Exception as e:
         return False, f"Kablosuz modül kuralları denetlenirken hata: {e}"
 
-    # Adım 3: Karar
-    if is_compliant:
+    if all_compliant:
         return True, f"Tüm kablosuz modüller ({', '.join(wireless_modules)}) zaten devre dışı bırakılmış (Uyumlu)."
     else:
-        # Uyumlu değilse, SADECE uyumsuz olanları değil,
-        # dosyanın yeniden yazılması için TÜM modülleri düzeltme fonksiyonuna gönder.
+        print(f"Denetim: Uyumsuz kablosuz modüller bulundu. Düzeltme uygulanacak...")
         return apply_wireless_modules_disable(wireless_modules)
 
 CONFIG_FILE = "/etc/modprobe.d/wifi-blacklist.conf"
+
 def apply_wireless_modules_disable(modules_to_disable: set):
     """
     Tespit edilen kablosuz modüller için kalıcı engelleme kuralları oluşturur
@@ -173,9 +189,7 @@ def apply_wireless_modules_disable(modules_to_disable: set):
     try:
         rules = [f"# Server tarafından oluşturuldu - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"]
         for module in modules_to_disable:
-            # Modülün yüklenmesini engelle (başarısız döndür)
             rules.append(f"install {module} /bin/false\n")
-            # Modülün otomatik yüklenmesini karalisteye al
             rules.append(f"blacklist {module}\n")
 
         with open(temp_path, "w") as f:
@@ -185,9 +199,7 @@ def apply_wireless_modules_disable(modules_to_disable: set):
         if not success:
             return False, f"Kablosuz modül kural dosyası oluşturulamadı: {output}"
 
-        # Modülleri sistemden kaldır
         for module in modules_to_disable:
-            # Modülün o an yüklü olup olmadığını 'lsmod' ile kontrol et
             is_loaded_check = run_command(['lsmod'])
             if is_loaded_check[0] and module in is_loaded_check[1]:
                 unload_success, unload_out = run_command(['sudo', 'modprobe', '-r', module])
@@ -388,43 +400,77 @@ def _is_ipv6_disabled_for_sysctl():
     """
     # /proc/sys/net/ipv6 dizini yoksa, sysctl ayarları da yoktur.
     return not os.path.exists("/proc/sys/net/ipv6/conf/all")
+
 def configure_sysctl_parameter(username, parameters):
     """
-    Tek bir sysctl anahtarını denetler ve gerekirse düzeltir.
-    IPv6'nın devre dışı olma durumunu dikkate alır.
+    Birden fazla sysctl anahtarını (listedeki) tek bir beklenen değere göre
+    denetler ve gerekirse düzeltir. (Fonksiyon adı aynı kaldı)
     """
-    sysctl_key = parameters.get("key")
+    sysctl_keys = parameters.get("keys") 
     expected_value = parameters.get("value")
 
-    if not sysctl_key or expected_value is None:
-        return False, "Politika hatası: 'key' ve 'value' parametreleri zorunludur."
-    
+    # Parametreleri doğrula
+    if not sysctl_keys or not isinstance(sysctl_keys, list) or expected_value is None:
+        return False, "Politika hatası: 'keys' (liste olarak) ve 'value' parametreleri zorunludur."
+     
     expected_value = str(expected_value) # Gelen '1' (int) değerini '1' (str) yap
 
-    try:
-        if "net.ipv6." in sysctl_key:
-            if _is_ipv6_disabled_for_sysctl():
-                return True, f"Denetim atlandı: '{sysctl_key}' (IPv6 devre dışı - Uyumlu/NA)."
-
-        # Mevcut sysctl değerini oku (sadece değeri almak için '-n' kullanılır)
-        # 'check=False' ve 'stderr' kullanmak, 'No such file' hatalarını yakalamamızı sağlar
-        proc = subprocess.run(
-            ['sysctl', '-n', sysctl_key], 
-            capture_output=True, text=True, check=False
-        )
+    all_successful = True
+    all_messages = []
+    
+    # 'keys' listesindeki her bir anahtar için döngü
+    for sysctl_key in sysctl_keys:
         
-        if proc.returncode != 0:
-            return False, f"sysctl '{sysctl_key}' kontrol edilirken hata: {proc.stderr}"
-        
-        current_value = proc.stdout.strip()
+        # Anahtarın geçerli bir string olduğundan emin ol
+        if not sysctl_key or not isinstance(sysctl_key, str) or sysctl_key.strip() == "":
+            all_messages.append("[Geçersiz Anahtar]: Parametre listesindeki bir anahtar boş.")
+            all_successful = False
+            continue 
 
-        if current_value == expected_value:
-            return True, f"'{sysctl_key}' değeri zaten '{expected_value}' olarak doğru ayarlanmış."
-        else:
-            return apply_sysctl_parameter(sysctl_key, expected_value)
+        try:
+            if "net.ipv6." in sysctl_key:
+                if _is_ipv6_disabled_for_sysctl():
+                    all_messages.append(f"[{sysctl_key}]: Denetim atlandı (IPv6 devre dışı - Uyumlu/NA).")
+                    continue # Bu anahtar başarılı (NA), döngüde sonrakine geç
+
+            # Orijinal kodunuzdaki subprocess çalıştırma
+            proc = subprocess.run(
+                ['sysctl', '-n', sysctl_key], 
+                capture_output=True, text=True, check=False
+            )
             
-    except Exception as e:
-        return False, f"sysctl '{sysctl_key}' kontrolünde genel hata: {e}"
+            if proc.returncode != 0:
+                # 'No such file' hatası (örn. IPv6 kapalıyken) bir hata değil, NA durumudur.
+                if ("No such file" in proc.stderr or "does not exist" in proc.stderr):
+                    all_messages.append(f"[{sysctl_key}]: Denetim atlandı (Ayar mevcut değil - Uyumlu/NA).")
+                    continue # Başarılı sayılır, sonrakine geç
+                else:
+                    # Gerçek bir hata
+                    all_messages.append(f"[{sysctl_key}]: sysctl kontrol edilirken hata: {proc.stderr.strip()}")
+                    all_successful = False
+                    continue # Başarısız, sonrakine geç
+            
+            current_value = proc.stdout.strip()
+
+            # Orijinal kodunuzdaki değer karşılaştırması
+            if current_value == expected_value:
+                all_messages.append(f"[{sysctl_key}]: Değer zaten '{expected_value}' olarak doğru ayarlanmış.")
+                # all_successful = True (zaten öyle)
+            else:
+                # Orijinal kodunuzdaki apply (düzeltme) çağrısı
+                success, message = apply_sysctl_parameter(sysctl_key, expected_value)
+                
+                all_messages.append(f"[{sysctl_key}]: {message}")
+                if not success:
+                    all_successful = False # Eğer herhangi biri başarısızsa, toplam sonuç başarısızdır
+                    
+        except Exception as e:
+            all_messages.append(f"[{sysctl_key}]: sysctl kontrolünde genel hata: {e}")
+            all_successful = False
+     
+ 
+    return all_successful, "\n".join(all_messages)
+    
 def apply_sysctl_parameter(key: str, value: str) -> tuple[bool, str]:
     """
     Belirtilen sysctl anahtarına istenen değeri atar, kalıcı hale getirir

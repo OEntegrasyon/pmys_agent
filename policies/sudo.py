@@ -194,28 +194,32 @@ def check_sudo_logfile_config(username, parameters):
     /etc/sudoers.d/ altında sudo loglaması için yapılandırma dosyasının
     varlığını ve doğruluğunu kontrol eder.
     """
-    config_file_path = "/etc/sudoers.d/01-sudo-logging"
-    expected_content = 'Defaults    logfile="/var/log/sudo.log"'
-
-    if not os.path.exists(config_file_path):
-        # Yapılandırma dosyası yoksa uygula.
-        return apply_sudo_logfile_config(username, parameters)
+    log_file_path="/var/log/sudo.log"
 
     try:
-        with open(config_file_path, 'r') as f:
-            # Dosya içeriğini boşlukları temizleyerek oku.
-            current_content = f.read().strip()
+        grep_cmd = [
+            'grep',
+            '-rPs',  # -r (recursive), -P (Perl-regex), -s (hata gösterme)
+            r"^\s*Defaults\s+([^#]+,\s*)?logfile\s*=\s*(\S+)", # CIS'in karmaşık regex'i yerine daha net bir regex
+            '/etc/sudoers',
+            '/etc/sudoers.d/'
+        ]
         
-        if current_content == expected_content:
-            # İçerik doğruysa ve log dosyası varsa, politika başarılıdır.
-            if os.path.exists("/var/log/sudo.log"):
-                 return True, "Sudo log yapılandırması ve log dosyası zaten mevcut."
-            else:
-                 # Yapılandırma var ama log dosyası silinmiş, yeniden oluştur.
-                 return apply_sudo_logfile_config(username, parameters)
+        success, output = run_command(grep_cmd)
+
+        rule_exists = success
+        log_file_exists = os.path.exists(log_file_path)
+        if rule_exists and log_file_exists:
+             return True, f"Sudo 'logfile' kuralı ve '{log_file_path}' dosyası mevcut (Uyumlu)."
         else:
-            # İçerik yanlışsa, doğru yapılandırmayı uygula.
+            if not rule_exists:
+                print(f"Denetim: Sudo yapılandırmasında (sudoers, sudoers.d) 'logfile' kuralı bulunamadı.")
+            if not log_file_exists:
+                print(f"Denetim: '{log_file_path}' dosyası bulunamadı.")
+            
+            # Eksik bir durum varsa, düzeltmeyi çağır.
             return apply_sudo_logfile_config(username, parameters)
+
     except Exception as e:
         return False, f"Sudo log yapılandırma dosyası okunurken hata: {e}"
 

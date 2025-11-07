@@ -2,7 +2,8 @@ from .apparmor import (
     ensure_apparmor_is_installed_and_active,
     enforce_apparmor_in_bootloader,
     ensure_no_apparmor_profiles_are_disabled,
-    set_apparmor_profiles_to_enforce
+    set_apparmor_profiles_to_enforce,
+    apply_disable_apparmor_grub
 )
 
 from .banner import (
@@ -13,7 +14,8 @@ from .banner import (
 
 from .bootlader import (
     enforce_bootloader_password,
-    harden_bootloader_permissions
+    harden_bootloader_permissions,
+    apply_disable_grub_password
 )
 
 from .client_services import (
