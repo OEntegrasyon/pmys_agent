@@ -663,10 +663,12 @@ def check_ssh_client_alive(param):
         if current.get("ClientAliveCountMax", 0) <= 0:
             return False, f"ClientAliveCountMax {current.get('ClientAliveCountMax')} (0 olmamalı)"
 
-        if desired_interval and current["ClientAliveInterval"] != desired_interval:
-            return False, f"ClientAliveInterval beklenen {desired_interval}, mevcut {current['ClientAliveInterval']}"
-        if desired_count and current["ClientAliveCountMax"] != desired_count:
-            return False, f"ClientAliveCountMax beklenen {desired_count}, mevcut {current['ClientAliveCountMax']}"
+        if desired_interval is not None:
+            if int(current.get("ClientAliveInterval", -1)) != int(desired_interval):
+                return False, f"ClientAliveInterval beklenen {desired_interval}, mevcut {current.get('ClientAliveInterval')}"
+        if desired_count is not None:
+            if int(current.get("ClientAliveCountMax", -1)) != int(desired_count):
+                return False, f"ClientAliveCountMax beklenen {desired_count}, mevcut {current.get('ClientAliveCountMax')}"
 
         return True, "ClientAliveInterval ve ClientAliveCountMax doğru yapılandırılmış."
 
@@ -754,7 +756,7 @@ def apply_ssh_client_alive(username=None, param=None):
 
     except Exception as ex:
         msg = f"Hata: {str(ex)}"
-        logger.error(f"[CIS 5.1.10-5.1.11][APPLY] {msg}")
+        logger.error(f"[CIS 5.1.7][APPLY] {msg}")
         return False, f"SSH ClientAlive ayar hatası: {msg}"
 
 
@@ -843,7 +845,6 @@ def check_sshd_gssapiauthentication():
     CIS 5.1.9 - GSSAPIAuthentication kontrolü
     Hem global ayarı hem de Match bloklarının override edip etmediğini denetler.
     """
-    # 1️⃣ Global config kontrolü
     ok, output = run_command(["sshd", "-T"])
     if not ok:
         return False, f"sshd -T çalıştırılamadı: {output}"
@@ -1463,10 +1464,9 @@ def apply_sshd_loglevel(username=None, param=None):
 
 
 
-BACKUP_CONFIG = "/etc/ssh/sshd_config.bak"
-
 SECURE_MACS = [
     "hmac-sha2-512",
+    "hmac-sha2-384",
     "hmac-sha2-256",
     "hmac-sha1"
 ]
@@ -1477,6 +1477,7 @@ WEAK_MACS = [
     "hmac-ripemd160",
     "hmac-sha1-96",
     "umac-64@openssh.com",
+    "umac-128@openssh.com",
     "hmac-md5-etm@openssh.com",
     "hmac-md5-96-etm@openssh.com",
     "hmac-ripemd160-etm@openssh.com",
@@ -1487,8 +1488,8 @@ WEAK_MACS = [
 
 def check_sshd_macs(param=None):
     """
-    CIS 5.1.15 - Check MAC algorithms
-    Zayıf MAC kullanımı var mı kontrol eder.
+    CIS 5.1.15 - Audit: Check for weak MAC algorithms.
+    CIS Benchmark gereğince sshd -T çıktısında zayıf MAC'ler bulunmamalıdır.
     """
     param = param or {}
     ok, output = run_command(["sshd", "-T"])
@@ -1504,17 +1505,18 @@ def check_sshd_macs(param=None):
     if not current_macs:
         return False, "MACs ayarı bulunamadı."
 
-    for weak in WEAK_MACS:
-        if weak in current_macs:
-            return False, f"Zayıf MAC tespit edildi: {weak}"
+    weak_found = [m for m in WEAK_MACS if m in current_macs]
+    if weak_found:
+        return False, f"Zayıf MAC tespit edildi: {', '.join(weak_found)}"
 
-    return True, f"MACs güvenli: {','.join(current_macs)}"
+    return True, f"MACs güvenli: {', '.join(current_macs)}"
 
 
 def apply_sshd_macs(username=None, param=None):
     """
-    CIS 5.1.15 - Ensure sshd MACs are configured
-    Güçlü MAC algoritmalarını uygular.
+    CIS 5.1.15 - Ensure sshd MACs are configured (CIS literal remediation)
+    - Zayıf MAC algoritmalarını '-' (exclude) biçiminde devre dışı bırakır.
+    - CVE-2023-48795 yaması yoksa etm@openssh.com MAC'lerini de exclude eder.
     """
     try:
         all_files = get_all_sshd_config_files()
@@ -1523,55 +1525,72 @@ def apply_sshd_macs(username=None, param=None):
 
         main_cfg = all_files[0]
         backup_file = f"{main_cfg}.bak"
-
         if not os.path.exists(backup_file):
-            run_command(["cp", main_cfg, backup_file])
+            shutil.copy2(main_cfg, backup_file)
 
         ok, msg = check_sshd_macs()
         if ok:
             return True, f"Zaten uygun: {msg}"
 
-        allowed_macs = param.get("allowed_macs") if param else SECURE_MACS
-        if isinstance(allowed_macs, str):
-            allowed_macs = [allowed_macs]
+        # CIS'e göre hariç tutulacak MAC listesi
+        weak_list = WEAK_MACS.copy()
 
-        new_line = f"MACs {','.join(allowed_macs)}\n"
+        # CVE-2023-48795 (Terrapin) yaması kontrolü
+        ok_v, ssh_ver_out = run_command(["ssh", "-V"])
+        patch_missing = True
+        if ok_v:
+            match = re.search(r"OpenSSH_(\d+\.\d+)", ssh_ver_out)
+            if match:
+                ver = float(match.group(1))
+                if ver >= 9.6:
+                    patch_missing = False
+
+        if patch_missing:
+            # CIS uyarısına göre etm@openssh.com MAC'lerini de devre dışı bırak
+            weak_list += [
+                "hmac-sha1-etm@openssh.com",
+                "hmac-sha2-256-etm@openssh.com",
+                "hmac-sha2-512-etm@openssh.com"
+            ]
+
+        exclude_line = f"MACs -{','.join(weak_list)}\n"
 
         with open(main_cfg, "r", encoding="utf-8") as f:
             lines = f.readlines()
 
-        # İlk Include veya Match öncesine ekle
+        # İlk Include veya Match'ten önce ekle
         insert_index = 0
         for i, line in enumerate(lines):
             if re.match(r'^\s*(Include|Match)\b', line, re.IGNORECASE):
                 insert_index = i
                 break
 
+        # Mevcut MACs satırı varsa değiştir, yoksa ekle
         pattern = re.compile(r'^\s*#?\s*MACs\b', re.IGNORECASE)
         existing_index = next((i for i, l in enumerate(lines) if pattern.match(l)), None)
 
-        if existing_index is None:
-            lines.insert(insert_index, new_line)
+        if existing_index is not None:
+            lines[existing_index] = exclude_line
         else:
-            lines[existing_index] = new_line
+            lines.insert(insert_index, exclude_line)
 
         with open(main_cfg, "w", encoding="utf-8") as f:
             f.writelines(lines)
 
-        # Doğrulama testi
+        # Yapılandırma testi
         ok_test, out_test = run_command(["sshd", "-t"])
         if not ok_test:
-            run_command(["cp", backup_file, main_cfg])
-            return False, f"sshd -t başarısız: {out_test}"
+            shutil.copy2(backup_file, main_cfg)
+            return False, f"sshd -t doğrulaması başarısız: {out_test}"
 
         # Servisi reload et
         run_command(["systemctl", "reload", "sshd"])
 
         ok_final, msg_final = check_sshd_macs()
         if ok_final:
-            return True, f"MACs başarıyla ayarlandı: {','.join(allowed_macs)}"
+            return True, f"Zayıf MAC algoritmaları devre dışı bırakıldı. Hariç tutulanlar: {', '.join(weak_list)}"
         else:
-            return False, f"Ayar yazıldı ama doğrulama başarısız: {msg_final}"
+            return False, f"Değişiklik yapıldı ancak doğrulama başarısız: {msg_final}"
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
@@ -2094,7 +2113,7 @@ def check_sshd_permit_user_environment():
                 return True, "PermitUserEnvironment doğru: no"
             else:
                 return False, f"PermitUserEnvironment yanlış: {value}"
-    return False, "PermitUserEnvironment ayarı bulunamadı (varsayılan 'no' olmalı)."
+    return True, "PermitUserEnvironment ayarı bulunamadı (varsayılan 'no' olmalı)."
 
 
 def apply_sshd_permit_user_environment(username=None, param=None):

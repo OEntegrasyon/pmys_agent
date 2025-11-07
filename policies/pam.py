@@ -16,12 +16,13 @@ from logger import logger
 
 
 def get_installed_package_version(package_name: str):
-    """Belirtilen paketin kurulu sürümünü döndürür."""
+    """Belirtilen paketin kurulu sürümünü döndürür.
+       Dönenler: (version_str, None) veya (None, error_msg)
+    """
     try:
         success, output = run_command(["dpkg-query", "-s", package_name])
         if not success:
-            return False, f"sshd -T çalıştırılamadı: {output}"
-
+            return None, f"{package_name} paketi sorgulanamadı: {output.strip()}"
         lines = output.splitlines()
         status_line = next((l for l in lines if l.startswith("Status:")), None)
         version_line = next((l for l in lines if l.startswith("Version:")), None)
@@ -32,23 +33,26 @@ def get_installed_package_version(package_name: str):
             installed_version = version_line.split(":", 1)[1].strip()
             return installed_version, None
         return None, f"{package_name} sürümü alınamadı"
-    except subprocess.CalledProcessError:
-        return None, f"{package_name} paketi bulunamadı"
+    except Exception as e:
+        return None, f"{package_name} sorgulama hatası: {str(e)}"
 
 
-def version_compare(v1, v2):
+def version_compare(v1: str, v2: str) -> int:
     """
-    Debian versiyonlarını kıyaslamak için dpkg --compare-versions kullan.
-    Dönen değer:
-      -1 -> v1 < v2
-       0 -> v1 == v2
-       1 -> v1 > v2
+    run_command ile dpkg --compare-versions kullanarak version compare.
     """
-    if subprocess.run(["dpkg", "--compare-versions", v1, "lt", v2]).returncode == 0:
-        return -1
-    elif subprocess.run(["dpkg", "--compare-versions", v1, "gt", v2]).returncode == 0:
-        return 1
-    else:
+    try:
+        ok, out = run_command(["dpkg", "--compare-versions", v1, "lt", v2])
+        if ok:
+            return -1
+
+        ok, out = run_command(["dpkg", "--compare-versions", v1, "gt", v2])
+        if ok:
+            return 1
+
+        return 0
+    except Exception as e:
+        logger.error(f"[version_compare] Hata: {e}")
         return 0
 
 
@@ -56,13 +60,14 @@ def check_libpam_runtime():
     """
     CIS 5.3.1.1 - Ensure latest version of pam is installed
     Minimum sürüm: 1.5.2-6
+    Döner: (True, message) veya (False, message)
     """
     package = "libpam-runtime"
     required_version = "1.5.2-6"
 
     installed_version, error = get_installed_package_version(package)
     if error:
-        return False, error
+        return False, f"Kontrol: {error}"
 
     cmp = version_compare(installed_version, required_version)
     if cmp < 0:
@@ -73,75 +78,87 @@ def check_libpam_runtime():
 def apply_libpam_runtime(username=None, param=None):
 
     """
-    CIS 5.3.1.1 için uygulatma fonksiyonu.
-
+    CIS 5.3.1.1 için uygulama (remediation).
     """
     try:
-        status, message = check_libpam_runtime()
-        if status:
+        ok, message = check_libpam_runtime()
+        if ok:
             return True, f"Değişiklik gerekmedi: {message}"
 
-        
         success, output = run_command(["apt-get", "update"])
         if not success:
-            return False, f"apt-get update çalıştırılamadı: {output}"
+            return False, f"apt-get update başarısız: {output}"
 
         success, output = run_command(["apt-get", "install", "--only-upgrade", "-y", "libpam-runtime"])
         if not success:
-            return False, f"install çalıştırılamadı: {output}"
-        
-        return True, "libpam-runtime paketi güncellendi."
+            return False, f"libpam-runtime yükseltilemedi: {output}"
+
+        ok2, message2 = check_libpam_runtime()
+        if ok2:
+            return True, "libpam-runtime paketi güncellendi ve sürüm kontrolü başarılı."
+        else:
+            return False, f"Güncelleme sonrası sürüm kontrolü başarısız: {message2}"
 
     except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"[CIS5.3.1.1][APPLY] {msg}")
-        return False, f"libpam-runtime uygulama hatası: {msg}"
+        logger.exception("[CIS5.3.1.1][APPLY] Hata")
+        return False, f"libpam-runtime uygulama hatası: {str(e)}"
 
-
+REQUIRED_VERSION = "1.5.2-6"
+PACKAGE = "libpam-modules"
 
 def check_libpam_modules():
     """
-    CIS 5.3.1.2 - Ensure libpam-modules is installed
-    Minimum sürüm: 1.5.2-6
+    CIS 5.3.1.2 - Ensure libpam-modules is installed (>= 1.5.2-6)
+    Kullanılan get_installed_package_version signature: (version, error)
     """
-    package = "libpam-modules"
-    required_version = "1.5.2-6"
+    installed_version, err = get_installed_package_version(PACKAGE)
+    if err:
+        # get_installed_package_version zaten kurulu değil veya hata mesajı döndü
+        return False, err
 
-    installed_version, error = get_installed_package_version(package)
-    if error:
-        return False, error
+    if not installed_version:
+        return False, f"{PACKAGE} kurulu değil veya sürümü okunamadı."
 
-    cmp = version_compare(installed_version, required_version)
+    cmp = version_compare(installed_version, REQUIRED_VERSION)
     if cmp < 0:
-        return False, f"{package} ({installed_version}) sürümü minimum gereksinimin ({required_version}) altında."
-    return True, f"{package} ({installed_version}) minimum gereksinimi ({required_version}) karşılıyor."
+        return False, f"{PACKAGE} sürümü düşük: {installed_version} < {REQUIRED_VERSION}"
+    
+    return True, f"{PACKAGE} sürümü uygun: {installed_version} ≥ {REQUIRED_VERSION}"
 
 
 def apply_libpam_modules(username=None, param=None):
     """
-    CIS 5.3.1.2 için uygulatma fonksiyonu.
-    minimum sürümü içeride sabitler.
+    CIS 5.3.1.2 - Remediation
+    Paket güncelleme ve sonrasında doğrulama yapar.
     """
     try:
-        status, message = check_libpam_modules()
-        if status:
-            return True, f"Değişiklik gerekmedi: {message}"
+        ok, msg = check_libpam_modules()
+        if ok:
+            return True, f"Değişiklik gerekmedi: {msg}"
 
-    
-        success, output = run_command(["apt-get", "update"])
+        logger.info("[CIS 5.3.1.2][APPLY] Paket güncellemesi başlatılıyor...")
+
+        success, out = run_command(["apt-get", "update"])
         if not success:
-            return False, f"apt-get update çalıştırılamadı: {output}"
+            return False, f"apt-get update başarısız: {out}"
 
-        success, output = run_command(["apt-get", "install", "--only-upgrade", "-y", "libpam-modules"])
+        success, out = run_command([
+            "apt-get", "install", "--only-upgrade", "-y",
+            "-o", "Dpkg::Options::=--force-confnew",
+            PACKAGE
+        ])
         if not success:
-            return False, f"install çalıştırılamadı: {output}"
+            return False, f"{PACKAGE} güncellenemedi: {out}"
 
-        return True, "libpam-modules paketi güncellendi."
+        ok2, msg2 = check_libpam_modules()
+        if ok2:
+            return True, f"Güncelleme başarılı: {msg2}"
+        else:
+            return False, f"Güncelleme sonrası doğrulama başarısız: {msg2}"
 
     except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"[CIS5.3.1.2][APPLY] {msg}")
-        return False, f"libpam-modules uygulama hatası: {msg}"
+        logger.exception("[CIS 5.3.1.2][APPLY] Beklenmeyen hata")
+        return False, f"Apply hatası: {str(e)}"
 
 
 

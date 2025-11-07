@@ -863,11 +863,11 @@ def revert_sshd_maxsessions():
 
 
 
-def revert_sshd_maxstartups():
+def revert_sshd_maxstartups(cis_default=True):
     """
-    CIS 5.1.18 - SSHD MaxStartups revert
-    MaxStartups satırlarını sshd_config ve include dizinlerinden kaldırır.
-    Revert sonrası varsayılan değer geçerli olur.
+    CIS 5.1.18 - SSHD MaxStartups revert (CIS uyumlu)
+    cis_default=True -> MaxStartups 10:30:60 yazar (CIS önerisi)
+    cis_default=False -> satırı kaldırır (OpenSSH default 10:30:100)
     """
     try:
         conf_files = ["/etc/ssh/sshd_config"] + glob.glob("/etc/ssh/sshd_config.d/*.conf")
@@ -877,25 +877,32 @@ def revert_sshd_maxstartups():
             if not os.path.exists(conf_file):
                 continue
 
-            # Yedek al
             backup_file = f"{conf_file}.bak"
             shutil.copy2(conf_file, backup_file)
 
-            # MaxStartups satırlarını kaldır
             with open(conf_file, "r", encoding="utf-8") as f:
                 lines = f.readlines()
+
+            # MaxStartups satırlarını kaldır
             new_lines = [line for line in lines if not line.strip().lower().startswith("maxstartups")]
+
+            if cis_default:
+                # CIS önerilen varsayılana dön
+                insert_index = 0
+                for i, line in enumerate(new_lines):
+                    if re.match(r'^\s*(Include|Match)\b', line, re.IGNORECASE):
+                        insert_index = i
+                        break
+                new_lines.insert(insert_index, "MaxStartups 10:30:60\n")
 
             with open(conf_file, "w", encoding="utf-8") as f:
                 f.writelines(new_lines)
 
             reverted_files.append(conf_file)
-            logger.info(f"[CIS 5.1.18][REVERT] MaxStartups satırı kaldırıldı: {conf_file}, yedek: {backup_file}")
+            logger.info(f"[CIS 5.1.18][REVERT] {conf_file} revert edildi, CIS varsayılana döndü: {'10:30:60' if cis_default else '10:30:100'}")
 
-        # SSH servisini reload et
-        run_command(["sudo", "systemctl", "reload", "sshd"])
-
-        return True, f"MaxStartups revert tamamlandı. Yedekler: {reverted_files}. Varsayılan değer geçerli."
+        run_command(["systemctl", "reload", "sshd"])
+        return True, f"MaxStartups revert tamamlandı. {'CIS default 10:30:60' if cis_default else 'OpenSSH default 10:30:100'} uygulandı."
 
     except Exception as e:
         msg = f"Hata: {str(e)}"

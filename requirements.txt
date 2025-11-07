@@ -6,3 +6,4 @@ pyinstaller==6.15.0
 pyinstaller-hooks-contrib==2025.8
 setuptools==80.9.0
 netifaces-plus
+netifaces
