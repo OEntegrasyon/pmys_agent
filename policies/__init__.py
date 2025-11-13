@@ -72,10 +72,6 @@ from .sudo import (
     check_sudo_logfile_config
     )
 
-from .firewall import (
-    configure_secure_firewall    
-)
-
 from .time_synchronization import (
     apply_timesyncd_service,
     apply_systemd_timesyncd_authorized_timeserver,

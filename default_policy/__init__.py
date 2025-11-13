@@ -10,7 +10,6 @@ from .revert_file_permissions_and_ownership import revert_file_permissions_and_o
 from .revert_interface_protocols import revert_interface_protocols
 from .revert_package_removals import revert_services_settings
 from .revert_process_hardening import revert_process_hardening
-from .revert_firewall import revert_firewall_settings
 from .revert_sudo import revert_sudo_settings
 from .revert_network_kernel_modules import revert_disabled_network_modules
 from .revert_network_kernel_parameters import revert_sysctl_parameters
@@ -128,7 +127,6 @@ def restore_all_to_default():
     _revert_safely(revert_services_settings, "Service Settings")
     _revert_safely(revert_process_hardening, "Process Hardening")
     _revert_safely(revert_sysctl_parameters, "Sysctl Parameters")
-    _revert_safely(revert_firewall_settings, "Firewall Settings")
     _revert_safely(revert_sudo_settings, "Sudo Settings")
     _revert_safely(revert_disabled_network_modules, "Network Kernel Module Disabling")
     _revert_safely(revert_sysctl_parameters, "Network Sysctl Parameters")

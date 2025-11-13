@@ -30,7 +30,6 @@
 │   ├── revert_apparmor_settings.py
 │   ├── revert_file_permissions_and_ownership.py
 │   ├── revert_filesystem_kernels.py
-│   ├── revert_firewall.py
 │   ├── revert_interface_protocols.py
 │   ├── revert_job_schedulers.py
 │   ├── revert_login_banners.py
@@ -56,7 +55,6 @@
 │   ├── client_services.py
 │   ├── filesystem_kernels.py
 │   ├── filesystem_partitions.py
-│   ├── firewall.py
 │   ├── __init__.py
 │   ├── job_schedulers.py
 │   ├── network.py
@@ -97,6 +95,7 @@
 │   └── utils.cpython-311.pyc
 ├── README.md
 ├── requirements.txt
+├── tree.tx
 ├── tree.txt
 ├── utils.py
 └── venv
@@ -4976,4 +4975,4 @@
     ├── lib64 -> lib
     └── pyvenv.cfg
 
-330 directories, 4647 files
+330 directories, 4646 files
