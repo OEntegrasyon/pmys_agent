@@ -14,69 +14,89 @@ from logger import logger
 
 def check_timesyncd_service():
     """
-    CIS 2.3.1.1 - Ensure only systemd-timesyncd is in use
-    systemd-timesyncd servisinin aktif ve enable durumda olup olmadığını kontrol eder.
+    CIS 2.3.1.1 - Ensure a single time synchronization daemon is in use
+    chrony ve systemd-timesyncd servislerinden yalnızca birinin etkin ve aktif olduğunu kontrol eder.
     """
-    success_enabled, enabled_status = run_command(
-        ["systemctl", "is-enabled", "systemd-timesyncd.service"]
-    )
-    success_active, active_status = run_command(
-        ["systemctl", "is-active", "systemd-timesyncd.service"]
-    )
+    daemons = {
+        "systemd-timesyncd.service": "systemd-timesyncd",
+        "chrony.service": "chrony",
+    }
 
-    if (success_enabled and enabled_status.strip() == "enabled") and \
-       (success_active and active_status.strip() == "active"):
-        logger.info("[CHECK] systemd-timesyncd servisi etkin ve çalışıyor.")
-        return True, "systemd-timesyncd servisi etkin ve çalışıyor."
+    active = []
+
+    for svc, name in daemons.items():
+        success_active, active_status = run_command(["systemctl", "is-active", svc])
+        success_enabled, enabled_status = run_command(["systemctl", "is-enabled", svc])
+
+        if (success_active and active_status.strip() == "active") and \
+           (success_enabled and enabled_status.strip() in ["enabled", "static"]):
+            active.append(name)
+
+    if len(active) == 0:
+        logger.warning("[CHECK] Hiçbir zaman senkronizasyon servisi aktif değil!")
+        return False, "Hiçbir zaman senkronizasyon servisi aktif değil."
+    elif len(active) > 1:
+        logger.warning(f"[CHECK] Birden fazla zaman senkronizasyon servisi aktif: {', '.join(active)}")
+        return False, f"Birden fazla zaman senkronizasyon servisi aktif: {', '.join(active)}"
     else:
-        logger.warning("[CHECK] systemd-timesyncd servisi etkin değil veya çalışmıyor.")
-        return False, "systemd-timesyncd servisi etkin değil veya çalışmıyor."
+        logger.info(f"[CHECK] CIS uyumlu: yalnızca {active[0]} aktif.")
+        return True, f"Yalnızca {active[0]} aktif – CIS uyumlu."
 
 
 def apply_timesyncd_service(username=None, param=None):
     """
-    CIS 2.3.1.1 - Remediation
-    Chrony/NTP devre dışı bırakılır ve sadece systemd-timesyncd etkinleştirilir.
-    Eğer systemd-timesyncd paketi yüklü değilse yüklenir.
+    CIS 2.3.1.1 - Ensure a single time synchronization daemon is in use
+    chrony veya systemd-timesyncd servislerinden yalnızca birini etkinleştirir,
+    diğerini sistemden kaldırır veya devre dışı bırakır.
     """
+    preferred = (param or {}).get("preferred_daemon", "systemd-timesyncd").lower()
+
+    daemons = {
+        "chrony": "chrony.service",
+        "systemd-timesyncd": "systemd-timesyncd.service",
+    }
+
+    if preferred not in daemons:
+        return False, f"Bilinmeyen daemon: {preferred}"
+
     try:
+        logger.info(f"[APPLY] CIS 2.3.1.1 - {preferred} tercih edildi, mevcut durum kontrol ediliyor...")
+
         ok, msg = check_timesyncd_service()
         if ok:
-            logger.info("[APPLY] Zaten uyumlu: " + msg)
-            return True, msg
+            logger.info(f"[APPLY] Zaten uyumlu: {msg}")
+            return True, f"Zaten uyumlu: {msg}"
 
-        logger.info("[APPLY] Uyumlu değil, düzeltme başlatılıyor...")
+        logger.info(f"[APPLY] Uyumlu değil, düzeltme işlemi başlatılıyor ({preferred})...")
 
-        # chrony durdur ve kaldır
-        run_command(["systemctl", "stop", "chrony.service"])
-        run_command(["systemctl", "disable", "chrony.service"])
-        run_command(["apt-get", "-y", "purge", "chrony"])
-        logger.info("[APPLY] Chrony paketi ve servisi kaldırıldı.")
+        for name, svc in daemons.items():
+            if name != preferred:
+                run_command(["systemctl", "stop", svc])
+                run_command(["systemctl", "disable", svc])
+                run_command(["systemctl", "mask", svc])
+                run_command(["apt-get", "-y", "purge", name])
+                run_command(["apt-get", "-y", "autoremove"])
+                logger.info(f"[APPLY] {name} servisi ve paketi kaldırıldı.")
 
-        # ntp durdur ve kaldır
-        run_command(["systemctl", "stop", "ntp.service"])
-        run_command(["systemctl", "disable", "ntp.service"])
-        run_command(["apt-get", "-y", "purge", "ntp"])
-        logger.info("[APPLY] NTP paketi ve servisi kaldırıldı.")
-
-        # systemd-timesyncd paket kontrolü
-        success_pkg, pkg_status = run_command(["dpkg", "-s", "systemd-timesyncd"])
+        success_pkg, pkg_status = run_command(["dpkg", "-s", preferred])
         if not success_pkg or "install ok installed" not in pkg_status:
-            logger.info("[APPLY] systemd-timesyncd paketi bulunamadı, yükleniyor...")
-            run_command(["apt-get", "update"])
-            run_command(["apt-get", "-y", "install", "systemd-timesyncd"])
-            logger.info("[APPLY] systemd-timesyncd paketi yüklendi.")
+            logger.info(f"[APPLY] {preferred} paketi yüklü değil, yükleniyor...")
+            run_command(["apt-get", "update", "-y"])
+            run_command(["apt-get", "-y", "install", preferred])
+            logger.info(f"[APPLY] {preferred} paketi yüklendi.")
 
-        # systemd-timesyncd etkinleştir
-        run_command(["systemctl", "unmask", "systemd-timesyncd.service"])
-        run_command(["systemctl", "enable", "--now", "systemd-timesyncd.service"])
-        logger.info("[APPLY] systemd-timesyncd servisi etkinleştirildi.")
+        svc = daemons[preferred]
+        run_command(["systemctl", "unmask", svc])
+        run_command(["systemctl", "enable", "--now", svc])
+        logger.info(f"[APPLY] {preferred} servisi etkinleştirildi ve başlatıldı.")
 
         ok, msg = check_timesyncd_service()
         if ok:
-            return True, "systemd-timesyncd başarıyla etkinleştirildi."
+            logger.info(f"[APPLY] CIS uyumlu hale getirildi: {msg}")
+            return True, f"CIS uyumlu hale getirildi: {msg}"
         else:
-            return False, "systemd-timesyncd etkinleştirilemedi!"
+            logger.warning(f"[APPLY] Düzeltme sonrası uyumsuzluk devam ediyor: {msg}")
+            return False, msg
 
     except Exception as e:
         logger.error(f"[APPLY] Politika hatası: {e}")
@@ -388,67 +408,34 @@ def apply_chrony_running_as_chrony(username=None, param=None):
 
 def check_timesync_service():
     """
-    CIS 2.3.3.3 - Ensure a time synchronization service is enabled and running
-    Desteklenen servisler:
-        - chrony
-        - ntp
-        - systemd-timesyncd
+    CIS 2.3.3.3 - Ensure chrony is enabled and running
     """
-    services = {
-        "chrony": "chrony.service",
-        "ntp": "ntp.service",
-        "systemd-timesyncd": "systemd-timesyncd.service"
-    }
+    ok1, out1 = run_command(["systemctl", "is-enabled", "chrony.service"])
+    ok2, out2 = run_command(["systemctl", "is-active", "chrony.service"])
 
-    for name, unit in services.items():
-        ok1, out1 = run_command(["systemctl", "is-enabled", unit])
-        ok2, out2 = run_command(["systemctl", "is-active", unit])
-
-        if out1.strip() == "enabled" and out2.strip() == "active":
-            logger.info(f"[CIS 2.3.3.3][CHECK] {name} servisi etkin ve çalışıyor.")
-            return True
-
-    logger.warning("[CIS 2.3.3.3][CHECK] Uyumlu bir zaman senkronizasyon servisi çalışmıyor.")
-    return False
+    if out1.strip() == "enabled" and out2.strip() == "active":
+        logger.info("[CIS 2.3.3.3][CHECK] chrony servisi etkin ve çalışıyor.")
+        return True, "chrony servisi etkin ve çalışıyor."
+    else:
+        logger.warning(f"[CIS 2.3.3.3][CHECK] chrony uygun değil (enabled={out1}, active={out2})")
+        return False, "chrony servisi etkin değil veya çalışmıyor."
 
 
 def apply_timesync_service(username=None, param=None):
     """
-    CIS 2.3.3.3 - Ensure a time synchronization service is enabled and running
-    Remediation:
-        - chrony, ntp veya systemd-timesyncd servislerinden biri etkinleştirilir
+    CIS 2.3.3.3 - Ensure chrony is enabled and running
     """
+    ok, msg = check_timesync_service()
+    if ok:
+        return True, msg
+
     try:
-        if check_timesync_service():
-            msg = "Zaten uyumlu bir zaman senkronizasyon servisi çalışıyor."
-            logger.info(f"[CIS 2.3.3.3][APPLY] {msg}")
-            return True, msg
-
-        # Öncelik: chrony -> ntp -> systemd-timesyncd
-        preferred = [
-            ("chrony", ["apt", "install", "-y", "chrony"], "chrony.service"),
-            ("ntp", ["apt", "install", "-y", "ntp"], "ntp.service"),
-            ("systemd-timesyncd", ["apt", "install", "-y", "systemd-timesyncd"], "systemd-timesyncd.service"),
-        ]
-
-        for name, install_cmd, unit in preferred:
-            ok, out = run_command(["dpkg", "-l", name])
-            if not ok:  # paket kurulu değilse yükle
-                run_command(install_cmd)
-
-            run_command(["systemctl", "unmask", unit])
-            run_command(["systemctl", "--now", "enable", unit])
-
-            if check_timesync_service():
-                msg = f"{name} servisi etkinleştirildi ve başlatıldı."
-                logger.info(f"[CIS 2.3.3.3][APPLY] {msg}")
-                return True, msg
-
-        msg = "Hiçbir zaman senkronizasyon servisi başlatılamadı!"
-        logger.error(f"[CIS 2.3.3.3][APPLY] {msg}")
-        return False, msg
-
+        run_command(["systemctl", "unmask", "chrony.service"])
+        run_command(["systemctl", "--now", "enable", "chrony.service"])
+        ok, msg = check_timesync_service()
+        if ok:
+            return True, "chrony servisi etkinleştirildi ve başlatıldı."
+        else:
+            return False, "chrony servisi başlatılamadı."
     except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"[CIS 2.3.3.3][APPLY] {msg}")
-        return False, msg
+        return False, f"Hata: {e}"
