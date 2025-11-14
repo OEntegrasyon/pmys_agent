@@ -19,21 +19,24 @@ def login_detection(conn_params, uuid):
     last_user = None
     while True:
         temp_user = get_logged_in_user()
+        
         if temp_user is not None and temp_user != last_user:
             logger.info(f"Yeni kullanıcı girişi algılandı: {temp_user}.")
-            logger.info("Giriş anında revert atlanıyor (Çıkışta revert yapıldı).")
 
             login_notify(temp_user, conn_params, uuid)
             last_user = temp_user 
-        
 
         elif temp_user is None and last_user is not None:
-            logger.info(f"Kullanıcı {last_user} oturumu kapattı/değiştirdi. Çıkış işlemi olarak revert yapılıyor.")
-        
+            logger.info(f"Kullanıcı {last_user} oturumu kapattı. CIS politikaları temizleniyor.")
+ 
             default_policy.restore_all_to_default()
+            
+            logger.info(f"Sadece istemci bazlı politikaları uygulamak için sunucuya bildiriliyor.")
+
+            login_notify(None, conn_params, uuid) 
+            
             last_user = None
  
-
         time.sleep(3)
 
 def on_policy_received(channel, method, properties, body):
@@ -41,23 +44,60 @@ def on_policy_received(channel, method, properties, body):
     data = json.loads(body)
 
     try:
-        username = data.get("username", "unknown")
-        if username == user:
-            for policy in data.get("policies", []):
-                policy_type = policy.get("policy_type__name", "unknown")
-                policy_parameters = policy.get("parameters", {})
-                logger.info(f"[on_policy_received] Politika alındı: {policy_type} for {username}, Parametreler: {policy_parameters}")
-                
-                success, result_msg = apply_policy(username, policy_type, policy_parameters)
-                
-                action = "policy_applied" if success else "policy_failed"
-                details = {"username": user, "policy_type": policy_type, "parameters": policy_parameters, "message": result_msg}
-                send_response(action, details)
-                if not success:
-                    logger.error(f"[on_policy_received] Politika uygulanamadı: {policy_type} for {username}, Hata: {result_msg}")
-    
-    finally:
+        username = data.get("username")
+        client_uuid = data.get("client_uuid") 
 
+        if username and username != user:
+            logger.warning(f"Politika uyuşmazlığı. Beklenen: '{user}', Gelen: '{username}'. Atlanıyor.")
+            channel.basic_ack(delivery_tag=method.delivery_tag)
+            return
+
+        policy_data = data.get("policies", {})
+        user_policies = policy_data.get("user", [])
+        client_policies = policy_data.get("client", [])
+
+        final_policies = {}
+        policy_source = {} 
+
+        for policy in user_policies:
+            policy_type = policy.get("policy_type__name")
+            if policy_type:
+                final_policies[policy_type] = policy
+                policy_source[policy_type] = "user" 
+
+        for policy in client_policies:
+            policy_type = policy.get("policy_type__name")
+            if policy_type:
+                logger.info(f"İstemci politikası '{policy_type}' öncelik kazanıyor.")
+                final_policies[policy_type] = policy
+                policy_source[policy_type] = "client" 
+
+        logger.info(f"Uygulanacak {len(final_policies)} adet nihai politika mevcut.")
+
+        for policy_type, policy in final_policies.items(): 
+            policy_parameters = policy.get("parameters", {})
+            source = policy_source.get(policy_type, "unknown") 
+
+            logger.info(f"[on_policy_received] Politika (Kaynak: {source}) uygulanıyor: {policy_type}, Parametreler: {policy_parameters}")
+
+            success, result_msg = apply_policy(username, policy_type, policy_parameters)
+
+            action = "policy_applied" if success else "policy_failed"
+
+            details = {
+                "username": user, 
+                "policy_type": policy_type, 
+                "parameters": policy_parameters, 
+                "message": result_msg,
+                "source": source,
+                "client_uuid": client_uuid 
+            }
+            send_response(action, details) 
+            
+            if not success:
+                logger.error(f"[on_policy_received] Politika uygulanamadı: {policy_type}, Hata: {result_msg}")
+
+    finally:
         channel.basic_ack(delivery_tag=method.delivery_tag)
 
 def apply_policy(username, policy_type, parameters):
@@ -110,6 +150,13 @@ def main():
         with open(config_file, 'w') as f:
             config.write(f)
         logger.info(f"İstemci kaydı tamamlandı.")
+
+    try:
+        logger.info("Sistem başlatıldı. Sadece istemci bazlı politikalar için sunucuya bildirim gönderiliyor...")
+        login_notify(None, conn_params, uuid) 
+        logger.info("İstemci bazlı politika talebi gönderildi.")
+    except Exception as e:
+        logger.error(f"Başlangıçta istemci politikaları talep edilirken hata oluştu: {e}")
 
     login_detection_thread = threading.Thread(target=login_detection, kwargs={'conn_params': conn_params, 'uuid':uuid}, daemon=True)
     listen_for_policies_thread = threading.Thread(target=listen_for_policies, kwargs={'conn_params': conn_params,}, daemon=True)

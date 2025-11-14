@@ -13,7 +13,7 @@ def revert_services_settings():
     _revert_package_removals()
 
 PACKAGES_TO_REINSTALL = [
-    "inetutils-telnetd"
+    "inetutils-telnet"
 ]
 
 def _revert_package_removals():
