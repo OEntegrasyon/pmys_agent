@@ -13,11 +13,9 @@ from utils import run_command
 
 def revert_password_expiration():
     """
-    CIS 5.4.1.1 - Revert (backup yerine dağıtımın default'ına döndürme)
-    - /etc/login.defs içindeki PASS_MAX_DAYS satırını kaldırır (veya yorumlar).
-    - Böylece paketin/distronun sağladığı default davranış geçerli olur.
-    - NOT: `chage` ile zaten değiştirilmiş kullanıcı bazlı maxdays değerleri otomatik
-      olarak geri alınmaz — bunlar elle düzeltilmelidir.
+    CIS 5.4.1.1 - Revert (Debian default)
+    Debian'ın varsayılan PASS_MAX_DAYS değeri 99999'dur.
+    Bu fonksiyon, /etc/login.defs içindeki PASS_MAX_DAYS satırını 99999 olarak geri ayarlar.
     """
     login_defs = "/etc/login.defs"
     if not os.path.exists(login_defs):
@@ -28,25 +26,39 @@ def revert_password_expiration():
         with open(login_defs, "r", encoding="utf-8") as f:
             lines = f.readlines()
 
-        # PASS_MAX_DAYS satırlarını tamamen kaldır
-        prog = re.compile(r'^\s*PASS_MAX_DAYS\b', re.IGNORECASE)
-        new_lines = [ln for ln in lines if not prog.match(ln)]
+        new_lines = []
+        found = False
+        for line in lines:
+            if re.match(r'^\s*PASS_MAX_DAYS\b', line, re.IGNORECASE):
+                new_lines.append("PASS_MAX_DAYS   99999\n")
+                found = True
+            else:
+                new_lines.append(line)
 
-        if len(new_lines) == len(lines):
-            # Hiç değişiklik gerekmedi
-            logger.info("[CIS 5.4.1.1][REVERT] PASS_MAX_DAYS için değişiklik gerekmedi (satır bulunamadı).")
-            return True, "PASS_MAX_DAYS zaten yok veya yorumlanmış."
+        # Eğer hiç yoksa en alta ekle
+        if not found:
+            new_lines.append("\nPASS_MAX_DAYS   99999\n")
 
-        # Dosyayı güvenli şekilde güncelle
+        # Yeni dosyayı yaz
         temp_path = login_defs + ".tmp"
         with open(temp_path, "w", encoding="utf-8") as f:
             f.writelines(new_lines)
-        os.replace(temp_path, login_defs)  # atomic-ish replacement
+        os.replace(temp_path, login_defs)
 
-        logger.info(f"[CIS 5.4.1.1][REVERT] {login_defs} içindeki PASS_MAX_DAYS satırları kaldırıldı. Sistem default'una dönüldü.")
-        logger.warning("[CIS 5.4.1.1] Kullanıcı bazlı chage değerleri otomatik geri alınamaz; gerekiyorsa manuel düzeltme yapın.")
+        logger.info("[CIS 5.4.1.1][REVERT] PASS_MAX_DAYS 99999 olarak Debian varsayılanına döndürüldü.")
 
-        return True, "PASS_MAX_DAYS kaldırıldı; dağıtımın default davranışına dönüldü."
+        # Kullanıcı bazlı chage değerlerini de Debian default’a çek
+        with open("/etc/passwd", "r") as f:
+            for line in f:
+                parts = line.strip().split(":")
+                if len(parts) > 2:
+                    user = parts[0]
+                    uid = int(parts[2])
+                    if uid >= 1000 and "nologin" not in line and "false" not in line:
+                        run_command(["chage", "--maxdays", "99999", user])
+        run_command(["chage", "--maxdays", "99999", "root"])
+
+        return True, "PASS_MAX_DAYS varsayılanı (99999) olarak geri ayarlandı."
 
     except Exception as e:
         msg = f"Hata: {e}"
@@ -57,17 +69,16 @@ def revert_password_expiration():
 
 def revert_min_password_days(username=None, param=None):
     """
-    CIS 5.4.1.2 Minimum Password Days
-    Revert için özel: PASS_MIN_DAYS değerini 1 güne ayarlar.
-    Kullanıcıların min_days değerlerini de chage ile 1 yapar.
+    Debian default revert:
+    PASS_MIN_DAYS değerini Debian varsayılanı olan 0'a döndürür.
+    Kullanıcıların min_days değerlerini de chage ile 0 yapar.
     """
     try:
-        revert_value = int(param.get("value", 1)) if param else 1
+        revert_value = int(param.get("value", 0)) if param else 0
 
         login_defs = "/etc/login.defs"
         if not os.path.exists(login_defs):
             return False, "/etc/login.defs bulunamadı"
-
 
         new_lines = []
         found = False
@@ -90,8 +101,7 @@ def revert_min_password_days(username=None, param=None):
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.writelines(new_lines)
         os.replace(tmp_path, login_defs)
-        logger.info(f"[CIS 5.4.1.2][REVERT] /etc/login.defs PASS_MIN_DAYS {revert_value} olarak güncellendi")
-
+        logger.info(f"[CIS 5.4.1.2][REVERT] /etc/login.defs PASS_MIN_DAYS {revert_value} (Debian default) olarak güncellendi")
 
         shadow = "/etc/shadow"
         if os.path.exists(shadow):
@@ -105,11 +115,11 @@ def revert_min_password_days(username=None, param=None):
                     if passwd_field and passwd_field.startswith("$"):
                         rc, out = run_command(["chage", "--mindays", str(revert_value), user])
                         if not rc:
-                            logger.warning(f"[CIS 5.4.1.2][REVERT] {user} için revert başarısız: {out}")
+                            logger.warning(f"[CIS 5.4.1.2][REVERT] {user} revert hatası: {out}")
                         else:
-                            logger.info(f"[CIS 5.4.1.2][REVERT] {user} için mindays={revert_value} olarak ayarlandı")
+                            logger.info(f"[CIS 5.4.1.2][REVERT] {user} için mindays={revert_value} (Debian default) olarak ayarlandı")
 
-        return True, f"PASS_MIN_DAYS {revert_value} gün olarak revert edildi"
+        return True, f"PASS_MIN_DAYS Debian varsayılanına (0) döndürüldü"
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
@@ -121,52 +131,52 @@ def revert_min_password_days(username=None, param=None):
 def revert_password_warn_days(username=None, param=None):
     """
     CIS 5.4.1.3 - Password Warning Days
-    PASS_WARN_AGE değerini geri alır.
-    Varsayılan: 120 gün olarak ayarlar.
+    Revert (Debian default): PASS_WARN_AGE değerini 7'ye döndürür.
+    Tüm kullanıcıların uyarı gün sayılarını da 7 yapar.
     """
     try:
-        revert_value = int(param.get("revert_value", 120)) if param else 120
+        revert_value = int(param.get("revert_value", 7)) if param else 7
 
         # login.defs revert
-        with open("/etc/login.defs", "r") as f:
+        with open("/etc/login.defs", "r", encoding="utf-8") as f:
             lines = f.readlines()
 
         new_lines = []
         found = False
         for line in lines:
             if re.search(r"^\s*PASS_WARN_AGE\s+", line) and not line.strip().startswith("#"):
-                new_lines.append(f"PASS_WARN_AGE {revert_value}\n")
+                new_lines.append(f"PASS_WARN_AGE   {revert_value}\n")
                 found = True
             else:
                 new_lines.append(line)
 
         if not found:
-            new_lines.append(f"PASS_WARN_AGE {revert_value}\n")
+            new_lines.append(f"\nPASS_WARN_AGE   {revert_value}\n")
 
-        with open("/etc/login.defs", "w") as f:
+        with open("/etc/login.defs", "w", encoding="utf-8") as f:
             f.writelines(new_lines)
 
         # shadow revert
-        with open("/etc/shadow", "r") as f:
+        with open("/etc/shadow", "r", encoding="utf-8") as f:
             for line in f:
                 parts = line.strip().split(":")
                 if len(parts) >= 7:
                     user = parts[0]
                     passwd_field = parts[1]
-
-                    # sadece parola set edilmiş ve root olmayan kullanıcılar
-                    if passwd_field.startswith("$") and user != "root":
+                    if passwd_field.startswith("$"):
                         success, out = run_command(["chage", "--warndays", str(revert_value), user])
                         if success:
-                            logger.info(f"[CIS 5.4.1.3][REVERT] {user} için PASS_WARN_AGE revert edildi -> {revert_value} : {out}")
+                            logger.info(f"[CIS 5.4.1.3][REVERT] {user} PASS_WARN_AGE={revert_value}")
                         else:
-                            logger.error(f"[CIS 5.4.1.3][REVERT] {user} revert başarısız: {out}")
-        logger.info(f"[CIS 5.4.1.3][REVERT] işlemi tamamlandı.")
-        return True, f"[CIS 5.4.1.3][REVERT] işlemi tamamlandı. ({revert_value})"
+                            logger.warning(f"[CIS 5.4.1.3][REVERT] {user} revert hatası: {out}")
+
+        logger.info(f"[CIS 5.4.1.3][REVERT] PASS_WARN_AGE Debian default (7 gün) olarak ayarlandı.")
+        return True, f"PASS_WARN_AGE Debian default'a (7) döndürüldü."
 
     except Exception as e:
-        logger.error(f"[CIS 5.4.1.3][REVERT] işlemi hatası: {str(e)}")
-        return False, f"[CIS 5.4.1.3][REVERT] işlemi hatası: {str(e)}"
+        msg = f"Hata: {str(e)}"
+        logger.error(f"[CIS 5.4.1.3][REVERT] Hata: {msg}")
+        return False, msg
 
 
 def revert_password_hashing_algorithm():

@@ -7,6 +7,7 @@
 import os
 import re
 import shutil
+import glob
 
 from logger import logger
 from utils import run_command
@@ -75,29 +76,46 @@ def revert_pam_pwquality():
 def revert_pwhistory():
     """
     CIS 5.3.2.4 - Revert pam_pwhistory
-    Uyarı: Bu işlem parola tekrar kullanımını yeniden mümkün kılar ve güvenliği azaltır.
+    Debian varsayılan PAM yapılandırmasına geri döner.
     """
     try:
-        profile_path = PWHISTORY_PROFILE_PATH
-        profile_name = PWHISTORY_PROFILE_NAME
+        profile_path = "/usr/share/pam-configs/pwhistory"
+        profile_name = "pwhistory"
+        target_file = "/etc/pam.d/common-password"
 
-        # pam-auth-update ile devre dışı bırak
-        success, output = run_command(["pam-auth-update", "--disable", profile_name])
-        if not success:
-            logger.error(f"[REVERT] pam-auth-update ile devre dışı bırakma başarısız: {output}")
-            return False, f"pam-auth-update çalıştırılamadı: {output}"
+        # 1) pam-auth-update ile disable et
+        run_command(["pam-auth-update", "--disable", profile_name])
 
-        # Profil dosyasını sil (opsiyonel)
+        # 2) PAM profil dosyasını sil (opsiyonel ama temiz revert için önerilir)
         if os.path.exists(profile_path):
             os.remove(profile_path)
-            logger.info(f" [CIS 5.3.2.4] [REVERT] PAM profil dosyası silindi: {profile_path}")
+            logger.info(f"[CIS 5.3.2.4][REVERT] PAM profil silindi: {profile_path}")
 
-        logger.info("[CIS 5.3.2.4 ][REVERT] pam_pwhistory modülü devre dışı bırakıldı.")
-        return True, "CIS 5.3.2.4 pam_pwhistory revert edildi, modül devre dışı bırakıldı."
+        # 3) common-password içindeki pam_pwhistory satırını kaldır
+        if os.path.exists(target_file):
+            with open(target_file, "r") as f:
+                lines = f.readlines()
+
+            new_lines = [
+                line for line in lines
+                if "pam_pwhistory.so" not in line  # ilgili satırı hariç bırak
+            ]
+
+            with open(target_file, "w") as f:
+                f.writelines(new_lines)
+
+            logger.info("[CIS 5.3.2.4][REVERT] common-password içindeki pam_pwhistory satırı kaldırıldı.")
+
+        # 4) Son durum kontrolü
+        ok, out = run_command(["grep", "-P", r"pam_pwhistory\.so", target_file])
+        if "pam_pwhistory.so" in out:
+            return False, "Revert başarısız: pam_pwhistory satırı hala mevcut."
+
+        return True, "pam_pwhistory Debian varsayılanına döndürüldü (revert başarılı)."
+
     except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"[REVERT] Hata: {msg}")
-        return False, f"Revert sırasında hata oluştu: {msg}"
+        logger.error(f"[REVERT ERROR] {e}")
+        return False, f"Revert sırasında hata oluştu: {str(e)}"
 
 
 DEFAULT_DENY = 5
@@ -124,203 +142,367 @@ def revert_failed_attempts_lockout():
         return False, f"Revert sırasında hata: {e}"
 
 
+UNLOCK_CONF = "/etc/security/faillock.conf"
+FAILLOCK_CONF = "/etc/security/faillock.conf"
+
 
 def revert_unlock_time():
     """
-    CIS 5.3.3.1.2 - Revert unlock_time configuration.
-    /etc/security/faillock.conf dosyasını yedekten geri yükler.
+    CIS 5.3.3.1.2 - Revert
+    - /etc/security/faillock.conf içindeki unlock_time satırını SİLER
+    - PAM profillerindeki unlock_time= parametresini TEMİZLER
     """
+
     try:
-        if not os.path.exists(BACKUP_FILE):
-            logger.warning("[CIS 5.3.3.1.2][REVERT] Yedek bulunamadı, geri alma yapılamıyor.")
-            return False, "Yedek dosya yok, revert gerçekleştirilemedi."
+        # 1) faillock.conf içinden unlock_time satırını kaldır
+        if os.path.exists(FAILLOCK_CONF):
+            new_lines = []
+            with open(FAILLOCK_CONF, "r") as f:
+                for line in f:
+                    if re.match(r"^\s*unlock_time\s*=", line):
+                        continue  # bu satırı atla (sil)
+                    new_lines.append(line)
 
-        shutil.copy2(BACKUP_FILE, FAILLOCK_CONF)
-        logger.info("[CIS 5.3.3.1.2][REVERT] unlock_time ayarı yedekten geri yüklendi.")
+            with open(FAILLOCK_CONF, "w") as f:
+                f.writelines(new_lines)
 
-        return True, f"{FAILLOCK_CONF} dosyası revert edildi (unlock_time geri alındı)."
+            logger.info("[CIS 5.3.3.1.2][REVERT] unlock_time satırı kaldırıldı (Debian default).")
+
+        # 2) PAM profile dosyalarında unlock_time= geçen parametreyi temizle
+        for fpath in glob.glob("/usr/share/pam-configs/*"):
+            try:
+                with open(fpath, "r") as f:
+                    data = f.read()
+                if "unlock_time=" not in data:
+                    continue
+
+                cleaned = "\n".join(
+                    " ".join(p for p in line.split() if not p.startswith("unlock_time="))
+                    for line in data.splitlines()
+                )
+
+                with open(fpath, "w") as f:
+                    f.write(cleaned)
+
+                logger.info(f"[CIS 5.3.3.1.2][REVERT] PAM profilinde unlock_time kaldırıldı: {fpath}")
+
+            except Exception as e:
+                logger.warning(f"[CIS 5.3.3.1.2][REVERT] Dosya işlenemedi: {fpath} → {e}")
+
+        # 3) PAM stack'te common-auth vb dosyalarda unlock_time geçmişse temizle
+        for pam_file in ["/etc/pam.d/common-auth", "/etc/pam.d/common-account"]:
+            if not os.path.exists(pam_file):
+                continue
+            lines = []
+            changed = False
+            with open(pam_file, "r") as f:
+                for line in f:
+                    if "unlock_time=" in line:
+                        cleaned_line = " ".join(x for x in line.split() if not x.startswith("unlock_time="))
+                        lines.append(cleaned_line + "\n")
+                        changed = True
+                    else:
+                        lines.append(line)
+
+            if changed:
+                with open(pam_file, "w") as f:
+                    f.writelines(lines)
+                logger.info(f"[CIS 5.3.3.1.2][REVERT] unlock_time parametresi temizlendi: {pam_file}")
+
+        return True, "unlock_time kaldırıldı ve sistem Debian varsayılanına döndürüldü."
+
     except Exception as e:
         logger.error(f"[CIS 5.3.3.1.2][REVERT] Hata: {e}")
-        return False, f"Revert sırasında hata: {e}"
+        return False, str(e)
 
 
-def revert_root_account_lock():
+def revert_root_account_lock(username=None, param=None):
     """
-    CIS 5.3.3.1.3 - Revert root account lockout configuration.
-    /etc/security/faillock.conf dosyasını yedekten geri yükler.
-    """
-    try:
-        backup_path = FAILLOCK_CONF + ".bak"
-        if not os.path.exists(backup_path):
-            logger.warning("[CIS 5.3.3.1.3][REVERT] Yedek bulunamadı, geri alma yapılamıyor.")
-            return False, "Yedek dosya yok, revert gerçekleştirilemedi."
-
-        shutil.copy2(backup_path, FAILLOCK_CONF)
-        logger.info("[CIS 5.3.3.1.3][REVERT] Root account lockout ayarları yedekten geri yüklendi.")
-
-        return True, f"{FAILLOCK_CONF} revert edildi (root_unlock_time ve even_deny_root eski haline döndü)."
-    except Exception as e:
-        logger.error(f"[CIS 5.3.3.1.3][REVERT] Hata: {e}")
-        return False, f"Revert sırasında hata: {e}"
-
-
-def revert_pwquality_difok():
-    """
-    CIS 5.3.3.2.1 - Revert pwquality difok ayarları
-    Debian varsayılanına döner:
-      - pwquality.conf içindeki aktif difok satırlarını yorum satırına çevirir (# difok = 2)
-      - 50-pwdifok.conf özel dosyasını siler
-      - PAM config dizininde difok= parametrelerini temizler
+    CIS 5.3.3.1.3 - Geri alma (Debian/Pardus varsayılanına dön)
+    - even_deny_root satırını kaldırır
+    - root_unlock_time satırını kaldırır
+    - PAM içindeki root_unlock_time parametrelerini temizler
+    - pam-auth-update kullanılmaz
     """
     try:
-        if not os.path.exists(PWQUALITY_CONF):
-            return False, f"{PWQUALITY_CONF} bulunamadı."
+        if not os.path.exists(FAILLOCK_CONF):
+            return False, f"{FAILLOCK_CONF} mevcut değil, revert gerekmiyor."
 
-        with open(PWQUALITY_CONF, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+        # 1) Yedek al
+        shutil.copy2(FAILLOCK_CONF, FAILLOCK_CONF + ".revert.bak")
 
+        # 2) even_deny_root ve root_unlock_time satırlarını sil
         new_lines = []
-        modified = False
-        for line in lines:
-            stripped = line.strip()
-            if re.match(r'^\s*difok\s*=\s*\d+', stripped) and not stripped.startswith("#"):
-                new_lines.append(f"# {stripped}\n")
-                modified = True
-            else:
+        changed = False
+
+        with open(FAILLOCK_CONF, "r") as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped.startswith("even_deny_root") or stripped.startswith("root_unlock_time"):
+                    changed = True
+                    continue  # bu satırları yazma (sil)
                 new_lines.append(line)
 
-        if modified:
-            with open(PWQUALITY_CONF, "w", encoding="utf-8") as f:
+        # 3) Güncellenmiş içeriği geri yaz
+        if changed:
+            with open(FAILLOCK_CONF, "w") as f:
                 f.writelines(new_lines)
-            logger.info("[CIS 5.3.3.2.1][REVERT] pwquality.conf içindeki aktif difok satırları yorum satırına çevrildi.")
-        else:
-            logger.info("[CIS 5.3.3.2.1][REVERT] pwquality.conf zaten uygun durumda.")
 
-        if os.path.exists(PWQUALITY_CONF_FILE):
-            os.remove(PWQUALITY_CONF_FILE)
-            logger.info(f"[CIS 5.3.3.2.1][REVERT] {PWQUALITY_CONF_FILE} silindi.")
+        # 4) PAM profillerindeki root_unlock_time parametresini temizle
+        ok, files = run_command(["grep", "-Pl", r"pam_faillock\.so.*root_unlock_time", "/usr/share/pam-configs"])
+        if ok and files.strip():
+            for fpath in files.splitlines():
+                try:
+                    with open(fpath, "r") as pf:
+                        lines = pf.read().splitlines()
 
-        if os.path.isdir(PAM_CONFIG_DIR):
-            for root, _, files in os.walk(PAM_CONFIG_DIR):
-                for fname in files:
-                    fpath = os.path.join(root, fname)
-                    try:
-                        with open(fpath, "r", encoding="utf-8") as f:
-                            content = f.read()
-                        if "pam_pwquality.so" in content and "difok=" in content:
-                            cleaned = re.sub(r'\bdifok=\d+\b', '', content)
-                            with open(fpath, "w", encoding="utf-8") as f:
-                                f.write(cleaned)
-                            logger.info(f"[CIS 5.3.3.2.1][REVERT] {fpath} içindeki difok= parametresi temizlendi.")
-                    except Exception:
-                        continue
+                    cleaned = [
+                        " ".join(p for p in ln.split() if not p.startswith("root_unlock_time="))
+                        for ln in lines
+                    ]
 
-        return True, "pwquality difok ayarları Debian varsayılanına döndürüldü."
+                    with open(fpath, "w") as pf:
+                        pf.write("\n".join(cleaned) + "\n")
+                except Exception:
+                    pass
+
+        # 5) common-auth içinde de güvenlik için tekrar temizle
+        with open("/etc/pam.d/common-auth", "r") as f:
+            lines = f.read().splitlines()
+
+        cleaned = [
+            " ".join(p for p in ln.split() if not p.startswith("root_unlock_time="))
+            for ln in lines
+        ]
+
+        with open("/etc/pam.d/common-auth", "w") as f:
+            f.write("\n".join(cleaned) + "\n")
+
+        return True, "Revert tamamlandı: even_deny_root ve root_unlock_time kaldırıldı, sistem varsayılana döndü."
 
     except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"[CIS 5.3.3.2.1][REVERT] {msg}")
-        return False, f"Revert hatası: {msg}"
+        logger.error(f"[CIS 5.3.3.1.3][REVERT] {e}")
+        return False, f"Revert hatası: {e}"
+
+
+def revert_pwquality_difok(username=None, param=None):
+    """
+    Revert for CIS 5.3.3.2.1 difok change:
+      - remove PWQUALITY_CONF_FILE if present (backup)
+      - uncomment any lines in /etc/security/pwquality.conf that start with '# difok'
+        (this attempts to restore previously-commented difok lines)
+      - remove difok=... module args from files under /usr/share/pam-configs/
+      - make backups (.revert.bak) before editing
+    Returns: (True/False, message)
+    """
+    try:
+        actions = []
+
+        # 1) Remove the 50-pwdifok.conf file if present (backup first)
+        if os.path.exists(PWQUALITY_CONF_FILE):
+            bak = PWQUALITY_CONF_FILE + ".revert.bak"
+            try:
+                shutil.copy2(PWQUALITY_CONF_FILE, bak)
+                actions.append(f"Yedek alındı: {bak}")
+            except Exception as e:
+                logger.warning(f"50-pwdifok yedeği alınamadı: {e}")
+            try:
+                os.remove(PWQUALITY_CONF_FILE)
+                actions.append(f"Kaldırıldı: {PWQUALITY_CONF_FILE}")
+            except Exception as e:
+                return False, f"{PWQUALITY_CONF_FILE} silinirken hata: {e}"
+
+        # 2) PWQUALITY_CONF içindeki '# difok = ...' satırlarını yorumdan çıkar (sadece ilk eşleşme)
+        if os.path.exists(PWQUALITY_CONF):
+            conf_bak = PWQUALITY_CONF + ".revert.bak"
+            try:
+                shutil.copy2(PWQUALITY_CONF, conf_bak)
+                actions.append(f"pwquality.conf yedeği alındı: {conf_bak}")
+            except Exception:
+                logger.warning("pwquality.conf yedeği alınamadı, devam ediliyor.")
+
+            try:
+                with open(PWQUALITY_CONF, "r", encoding="utf-8") as f:
+                    lines = f.read().splitlines()
+
+                changed = False
+                new_lines = []
+                # Eğer apply sırasında sed ile yorumlama yapıldıysa onlar '# difok = ...' şeklinde olacak.
+                for ln in lines:
+                    m = re.match(r'^\s*#\s*(difok\s*=\s*\d+\b.*)$', ln, flags=re.IGNORECASE)
+                    if m:
+                        new_ln = re.sub(r'^\s*#\s*', '', ln, count=1)
+                        new_lines.append(new_ln)
+                        changed = True
+                        actions.append(f"pwquality.conf içinde yorumdan çıkarıldı: {new_ln.strip()}")
+                    else:
+                        new_lines.append(ln)
+
+                if changed:
+                    with open(PWQUALITY_CONF, "w", encoding="utf-8") as f:
+                        f.write("\n".join(new_lines) + "\n")
+                else:
+                    actions.append("pwquality.conf içinde yorumdan çıkarılacak '# difok' bulunmadı.")
+            except Exception as e:
+                return False, f"pwquality.conf düzenlenirken hata: {e}"
+        else:
+            actions.append("pwquality.conf bulunmadı; atlandı.")
+
+        # 3) PAM config profillerindeki difok argümanlarını temizle (yedek al ve düzenle)
+        pam_files = glob.glob(os.path.join(PAM_CONFIG_DIR, "*"))
+        cleaned_any = False
+        for fpath in pam_files:
+            if not os.path.isfile(fpath):
+                continue
+            try:
+                with open(fpath, "r", encoding="utf-8") as pf:
+                    content = pf.read()
+                if "difok" not in content:
+                    continue
+
+                # backup
+                try:
+                    shutil.copy2(fpath, fpath + ".revert.bak")
+                    actions.append(f"PAM profil yedeği alındı: {fpath}.revert.bak")
+                except Exception:
+                    logger.warning(f"PAM profil yedeği alınamadı: {fpath}")
+
+                # temizle: 'difok = N' veya 'difok=N' veya 'difok= N' gibi argümanları kaldır
+                new_lines = []
+                for ln in content.splitlines():
+                    # remove tokens like difok=123 or difok = 123 (standalone token)
+                    parts = [p for p in ln.split() if not re.match(r'(?i)^difok\s*=\s*\d+$', p)]
+                    new_ln = " ".join(parts)
+                    new_lines.append(new_ln)
+
+                with open(fpath, "w", encoding="utf-8") as pf:
+                    pf.write("\n".join(new_lines) + "\n")
+
+                cleaned_any = True
+                actions.append(f"PAM profil temizlendi: {fpath}")
+            except Exception as e:
+                logger.warning(f"PAM profil düzenlenemedi: {fpath} -> {e}")
+                continue
+
+        if not cleaned_any:
+            actions.append("PAM profillerinde temizlenecek difok argümanı bulunmadı.")
+
+        # 4) common-password içinde de difok argümanlarını temizle (yedek al)
+        common_password = "/etc/pam.d/common-password"
+        if os.path.exists(common_password):
+            try:
+                shutil.copy2(common_password, common_password + ".revert.bak")
+            except Exception:
+                logger.warning("common-password yedeği alınamadı.")
+            try:
+                with open(common_password, "r", encoding="utf-8") as f:
+                    lines = f.read().splitlines()
+
+                new_lines = []
+                changed_cp = False
+                for ln in lines:
+                    if "pam_pwquality.so" in ln and "difok" in ln:
+                        parts = [p for p in ln.split() if not re.match(r'(?i)^difok\s*=\s*\d+$', p)]
+                        new_ln = " ".join(parts)
+                        new_lines.append(new_ln)
+                        changed_cp = True
+                    else:
+                        new_lines.append(ln)
+
+                if changed_cp:
+                    with open(common_password, "w", encoding="utf-8") as f:
+                        f.write("\n".join(new_lines) + "\n")
+                    actions.append(" /etc/pam.d/common-password içindeki difok argümanları temizlendi.")
+                else:
+                    actions.append(" /etc/pam.d/common-password içinde difok argümanı bulunmadı.")
+            except Exception as e:
+                return False, f"common-password düzenlenirken hata: {e}"
+        else:
+            actions.append("/etc/pam.d/common-password bulunmadı; atlandı.")
+
+        summary = " ; ".join(actions) if actions else "Herhangi bir değişiklik yapılmadı."
+        return True, f"Revert tamamlandı. Özet: {summary}"
+
+    except Exception as e:
+        logger.exception("[CIS 5.3.3.2.1][pwquality_difok] Hata")
+        return False, f"Revert sırasında hata oluştu: {e}"
 
 
 def revert_min_password_length():
     """
-    CIS 5.3.3.2.2 - Revert minlen configuration.
-    Debian varsayılanına döndürür:
-      - pwquality.conf içindeki aktif minlen satırlarını yorum satırına çevirir (# minlen = 8)
-      - /etc/security/pwquality.conf.d/50-pwlength.conf dosyasını siler
-      - PAM config dosyalarındaki minlen= parametrelerini temizler
+    CIS 5.3.3.2.2 - Revert: minimum parola uzunluğu (minlen) ayarını Debian default haline döndürür.
+    - /etc/security/pwquality.conf içindeki minlen satırını siler
+    - /etc/security/pwquality.conf.d/ altındaki minlen içeren 50-pw*.conf dosyalarını siler
+    - PAM config içinde pam_pwquality.so satırlarından minlen parametresini temizler
     """
     try:
-        if not os.path.exists(PWQUALITY_CONF):
-            return False, f"{PWQUALITY_CONF} bulunamadı."
 
-        with open(PWQUALITY_CONF, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+        # 1) Ana pwquality.conf içinden minlen satırını sil
+        run_command(["sed", "-ri", "/^\\s*minlen\\s*=/d", PWQUALITY_CONF])
 
-        new_lines = []
-        modified = False
-        for line in lines:
-            stripped = line.strip()
-            if re.match(r'^\s*minlen\s*=\s*\d+', stripped) and not stripped.startswith("#"):
-                new_lines.append("# minlen = 8\n")  # Debian default
-                modified = True
-            else:
-                new_lines.append(line)
+        # 2) .d dizinindeki 50-pw*.conf dosyalarını sil (50-pwlength, 50-pwroot vb hepsi)
+        success, files = run_command(["bash", "-c", "ls /etc/security/pwquality.conf.d/50-pw*.conf 2>/dev/null"])
+        if success and files:
+            for file in files.splitlines():
+                run_command(["rm", "-f", file])
 
-        if modified:
-            with open(PWQUALITY_CONF, "w", encoding="utf-8") as f:
-                f.writelines(new_lines)
-            logger.info("[CIS 5.3.3.2.2][REVERT] pwquality.conf içindeki aktif minlen satırları yorum satırına çevrildi (# minlen = 8).")
-        else:
-            logger.info("[CIS 5.3.3.2.2][REVERT] pwquality.conf zaten uygun durumda.")
+        # 3) PAM config içindeki minlen parametrelerini temizle
+        success, files = run_command([
+            "bash", "-c",
+            "grep -Pl '\\bpam_pwquality\\.so\\s+([^#\\n\\r]+\\s+)?minlen\\b' /usr/share/pam-configs/* 2>/dev/null"
+        ])
 
-        if os.path.exists(PWQUALITY_FILE):
-            os.remove(PWQUALITY_FILE)
-            logger.info(f"[CIS 5.3.3.2.2][REVERT] {PWQUALITY_FILE} silindi.")
+        if success and files.strip():
+            for file in files.splitlines():
+                run_command(["sed", "-ri", "s/\\bminlen\\s*=\\s*\\d+\\b//g", file])
+                logger.info(f"[revert_min_password_length] minlen parametresi temizlendi: {file}")
 
-        if os.path.isdir(PAM_CONFIG_DIR):
-            for root, _, files in os.walk(PAM_CONFIG_DIR):
-                for fname in files:
-                    fpath = os.path.join(root, fname)
-                    try:
-                        with open(fpath, "r", encoding="utf-8") as f:
-                            content = f.read()
-                        if "pam_pwquality.so" in content and "minlen=" in content:
-                            cleaned = re.sub(r'\bminlen=\d+\b', '', content)
-                            with open(fpath, "w", encoding="utf-8") as f:
-                                f.write(cleaned)
-                            logger.info(f"[CIS 5.3.3.2.2][REVERT] {fpath} içindeki minlen= parametresi temizlendi.")
-                    except Exception:
-                        continue
-
-        return True, "CIS 5.3.3.2.2 revert tamamlandı: Debian varsayılanı (# minlen = 8) geri yüklendi."
+        logger.info("[CIS 5.3.3.2.2][REVERT] Revert tamamlandı, sistem Debian varsayılanına döndü.")
+        return True, "minlen ayarları kaldırıldı, Debian varsayılanına dönüldü."
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
         logger.error(f"[CIS 5.3.3.2.2][REVERT] {msg}")
-        return False, f"Revert hatası: {msg}"
+        return False, msg
 
 
 def revert_pw_complexity():
     """
     CIS 5.3.3.2.3 - Revert password complexity configuration.
-    Debian varsayılanına döner:
-      - pwquality.conf içindeki aktif minclass/dcredit/ucredit/lcredit/ocredit satırlarını yorumlar (# param = 0)
-      - 50-pwcomplexity.conf dosyasını siler
-      - PAM config dosyalarındaki bu parametreleri temiz tutar
+    Debian varsayılanına geri döndürür:
+      - pwquality.conf içindeki minclass, dcredit, ucredit, lcredit, ocredit satırlarını SİLER
+      - pwquality.conf.d/50-pwcomplexity.conf dosyasını SİLER
+      - PAM config (pam_pwquality.so) içindeki karmaşıklık override'larını TEMİZLER
+      - /etc/pam.d/common-password override'larını da TEMİZLER
     """
     try:
-        if not os.path.exists(PWQUALITY_CONF):
-            return False, f"{PWQUALITY_CONF} bulunamadı."
+        # 1) pwquality.conf içindeki karmaşıklık satırlarını sil
+        if os.path.exists(PWQUALITY_CONF):
+            keys = ["minclass", "dcredit", "ucredit", "lcredit", "ocredit"]
+            with open(PWQUALITY_CONF, "r", encoding="utf-8") as f:
+                lines = f.readlines()
 
-        keys = ["minclass", "dcredit", "ucredit", "lcredit", "ocredit"]
-        with open(PWQUALITY_CONF, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+            new_lines = []
+            modified = False
 
-        new_lines = []
-        modified = False
-        for line in lines:
-            stripped = line.strip()
-            if any(re.match(rf"^\s*{k}\s*=", stripped) for k in keys) and not stripped.startswith("#"):
-                key = next(k for k in keys if stripped.startswith(k))
-                new_lines.append(f"# {key} = 0\n")
-                modified = True
-            else:
+            for line in lines:
+                if any(re.match(rf"^\s*{k}\s*=", line.strip()) for k in keys):
+                    modified = True  # atlayarak sil
+                    continue
                 new_lines.append(line)
 
-        if modified:
-            with open(PWQUALITY_CONF, "w", encoding="utf-8") as f:
-                f.writelines(new_lines)
-            logger.info("[CIS 5.3.3.2.3][REVERT] pwquality.conf içindeki aktif karmaşıklık satırları (# param = 0) olarak yorumlandı.")
-        else:
-            logger.info("[CIS 5.3.3.2.3][REVERT] pwquality.conf zaten uygun durumda.")
+            if modified:
+                with open(PWQUALITY_CONF, "w", encoding="utf-8") as f:
+                    f.writelines(new_lines)
+                logger.info("[CIS 5.3.3.2.3][REVERT] pwquality.conf içindeki karmaşıklık satırları silindi.")
 
+        # 2) 50-pwcomplexity.conf dosyasını sil
         if os.path.exists(PWQUALITY_CONF_D_COMPLEXITY):
             os.remove(PWQUALITY_CONF_D_COMPLEXITY)
             logger.info(f"[CIS 5.3.3.2.3][REVERT] {PWQUALITY_CONF_D_COMPLEXITY} silindi.")
 
-        pam_params = "|".join(keys)
+        # 3) /usr/share/pam-configs içindeki override'ları temizle
+        pam_params = r"(minclass|[dulo]credit)"
         if os.path.isdir(PAM_CONFIG_DIR):
             for root, _, files in os.walk(PAM_CONFIG_DIR):
                 for fname in files:
@@ -328,15 +510,33 @@ def revert_pw_complexity():
                     try:
                         with open(fpath, "r", encoding="utf-8") as f:
                             content = f.read()
+
                         if "pam_pwquality.so" in content and re.search(pam_params, content):
-                            cleaned = re.sub(rf'\b({pam_params})\s*=\s*-?\d+\b', '', content)
-                            with open(fpath, "w", encoding="utf-8") as f:
-                                f.write(cleaned)
-                            logger.info(f"[CIS 5.3.3.2.3][REVERT] {fpath} içindeki karmaşıklık parametreleri temizlendi.")
+                            cleaned = re.sub(rf'\b{pam_params}\s*=\s*-?\d+\b', '', content)
+                            if cleaned != content:
+                                with open(fpath, "w", encoding="utf-8") as f:
+                                    f.write(cleaned)
+                                logger.info(f"[CIS 5.3.3.2.3][REVERT] {fpath} içindeki karmaşıklık override'ları temizlendi.")
                     except Exception:
                         continue
 
-        return True, "Parola karmaşıklık ayarları Debian varsayılanına geri döndürüldü."
+        # 4) /etc/pam.d/common-password içindeki override'ları temizle
+        common_pw = "/etc/pam.d/common-password"
+        if os.path.exists(common_pw):
+            try:
+                with open(common_pw, "r", encoding="utf-8") as f:
+                    content = f.read()
+
+                if "pam_pwquality.so" in content and re.search(pam_params, content):
+                    cleaned = re.sub(rf'\b{pam_params}\s*=\s*-?\d+\b', '', content)
+                    if cleaned != content:
+                        with open(common_pw, "w", encoding="utf-8") as f:
+                            f.write(cleaned)
+                        logger.info("[CIS 5.3.3.2.3][REVERT] common-password içindeki karmaşıklık override'ları temizlendi.")
+            except Exception as e:
+                logger.error(f"[CIS 5.3.3.2.3][REVERT] common-password temizlenirken hata: {e}")
+        logger.info("[CIS 5.3.3.2.3][REVERT] Parola karmaşıklık ayarları tamamen varsayılana döndürüldü.")
+        return True, "Parola karmaşıklık ayarları tamamen varsayılana (Debian default) döndürüldü."
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
@@ -456,12 +656,10 @@ def revert_dictcheck():
 
 def revert_enforcing():
     """
-    CIS 5.3.3.2.7 - Revert enforcing configuration
-    apply_enforcing() işleminin tüm etkilerini geri alır:
-      - /etc/security/pwquality.conf.d/50-enforcing.conf dosyasını siler.
-      - /etc/security/pwquality.conf ve alt dizinlerde enforcing ile ilgili satırları temizler.
-      - /etc/pam.d/common-password ve /usr/share/pam-configs içindeki enforcing parametrelerini kaldırır.
-    Sonuç: Sistem Debian varsayılanına döner (enforcing etkin, explicit tanım olmadan).
+    CIS 5.3.3.2.7 - Revert enforcing configuration (Debian defaulta döndür)
+    - 50-enforcing.conf silinir
+    - enforcing=0/1 içeren aktif satırlar temizlenir
+    - Sadece pam_pwquality.so içindeki enforcing parametreleri kaldırılır
     """
     try:
         changes = []
@@ -469,43 +667,37 @@ def revert_enforcing():
         if os.path.exists(ENFORCING_CONF):
             os.remove(ENFORCING_CONF)
             changes.append(f"{ENFORCING_CONF} silindi.")
-            logger.info(f"[CIS 5.3.3.2.7][REVERT] {ENFORCING_CONF} dosyası silindi.")
 
-        conf_files = [PWQUALITY_CONF]
-        if os.path.isdir(PWQUALITY_DIR):
-            for fname in os.listdir(PWQUALITY_DIR):
-                if fname.endswith(".conf"):
-                    conf_files.append(os.path.join(PWQUALITY_DIR, fname))
+        # 2) pwquality.conf ve .d içindeki aktif enforcing satırlarını sil (yorumları ellemiyoruz)
+        targets = [PWQUALITY_CONF] + glob.glob(f"{PWQUALITY_DIR}/*.conf")
+        for conf in targets:
+            if os.path.isfile(conf):
+                run_command(["sed", "-ri", r"/^\s*enforcing\s*=\s*[0-9]+\b/d", conf])
+                changes.append(f"{conf} içindeki enforcing tanımları silindi.")
 
-        for file in conf_files:
-            if os.path.exists(file):
-                run_command(["sed", "-ri", r"/^\s*#?\s*enforcing\s*=\s*[0-9]+\b/d", file])
-                changes.append(f"{file} içindeki enforcing satırları temizlendi.")
-                logger.info(f"[CIS 5.3.3.2.7][REVERT] {file} içindeki enforcing satırları temizlendi.")
+        # 3) common-password içinde sadece pam_pwquality.so satırındaki enforcing parametrelerini kaldır
+        if os.path.isfile(COMMON_PASSWORD):
+            run_command([
+                "sed", "-ri",
+                r"s/(pam_pwquality\.so[^#\n\r]*?)\benforcing\s*=\s*\d+(\s*|$)/\1\2/g",
+                COMMON_PASSWORD
+            ])
+            changes.append("common-password pam_pwquality enforcing temizlendi.")
 
-        if os.path.exists(COMMON_PASSWORD):
-            run_command(["sed", "-ri", r"s/\benforcing\s*=\s*\d+\b//g", COMMON_PASSWORD])
-            changes.append("common-password içindeki enforcing parametreleri kaldırıldı.")
-            logger.info("[CIS 5.3.3.2.7][REVERT] common-password içindeki enforcing parametreleri kaldırıldı.")
+        # 4) pam-configs içinde sadece pam_pwquality.so satırlarındaki enforcing’i kaldır
+        grep_cmd = ["grep", "-Pl", r"pam_pwquality\.so.*enforcing", f"{PAM_CONFIG_DIR}/*"]
+        ok, out = run_command(grep_cmd)
 
-        if os.path.isdir(PAM_CONFIG_DIR):
-            for fname in os.listdir(PAM_CONFIG_DIR):
-                path = os.path.join(PAM_CONFIG_DIR, fname)
-                if not os.path.isfile(path):
-                    continue
-                try:
-                    with open(path, "r") as f:
-                        content = f.read()
-                    if "enforcing" in content:
-                        run_command(["sed", "-ri", r"s/\benforcing\s*=\s*\d+\b//g", path])
-                        changes.append(f"{path} içindeki enforcing parametresi kaldırıldı.")
-                        logger.info(f"[CIS 5.3.3.2.7][REVERT] {path} içindeki enforcing parametresi kaldırıldı.")
-                except Exception:
-                    continue
-
-        msg = f"Revert tamamlandı. {len(changes)} değişiklik yapıldı: {', '.join(changes)}"
-        logger.info(f"[CIS 5.3.3.2.7][REVERT] {msg}")
-        return True, msg
+        if ok and out.strip():
+            for f in out.splitlines():
+                run_command([
+                    "sed", "-ri",
+                    r"s/(pam_pwquality\.so[^#\n\r]*?)\benforcing\s*=\s*\d+(\s*|$)/\1\2/g",
+                    f
+                ])
+                changes.append(f"{f} pam_pwquality enforcing temizlendi.")
+        logger.info(f"[CIS 5.3.3.2.7][REVERT] Revert tamamlandı ({len(changes)} değişiklik): " + ", ".join(changes))
+        return True, f"Revert tamamlandı ({len(changes)} değişiklik): " + ", ".join(changes)
 
     except Exception as e:
         msg = f"Hata: {e}"
@@ -608,46 +800,42 @@ def revert_password_history_remember():
 
 def revert_password_history_enforce_for_root():
     """
-    5.3.3.3.2 - Revert password history enforce_for_root configuration.
-    Apply sırasında yapılan remember ve enforce_for_root değişikliklerini kaldırır.
+    CIS 5.3.3.3.2 - Revert password history enforce_for_root configuration.
+    'apply_password_history_enforce_for_root' işlemini geri alır:
+      - /usr/share/pam-configs/pwhistory dosyasını siler veya temizler.
+      - pam_pwhistory modülünü devre dışı bırakır.
+      - common-password içindeki enforce_for_root ve remember parametrelerini kaldırır.
     """
     try:
         profile_path = "/usr/share/pam-configs/pwhistory"
         common_password = "/etc/pam.d/common-password"
 
-        if not os.path.exists(profile_path):
-            logger.info("[CIS 5.3.3.3.2][REVERT] Profil dosyası bulunamadı, revert gerek yok.")
-            return True, "Profil dosyası yok, revert gerek yok."
+        # Profil dosyasını kaldır veya temizle
+        if os.path.exists(profile_path):
+            os.remove(profile_path)
+            logger.info("[CIS 5.3.3.3.2][REVERT] pwhistory profili silindi.")
+        else:
+            logger.info("[CIS 5.3.3.3.2][REVERT] Profil zaten mevcut değil.")
 
-        with open(profile_path, "r") as f:
-            lines = f.readlines()
-
-        new_lines = []
-        for line in lines:
-            if "pam_pwhistory.so" in line:
-                line = re.sub(r"\benforce_for_root\b", "", line)
-                line = re.sub(r"\bremember=\d+\b", "", line)
-                line = re.sub(r"\s{2,}", " ", line).strip() + "\n"
-            new_lines.append(line)
-
-        with open(profile_path, "w") as f:
-            f.writelines(new_lines)
-
-        logger.info("[CIS 5.3.3.3.2][REVERT] enforce_for_root ve remember parametreleri kaldırıldı.")
-
+        # PAM modülünü devre dışı bırak
         success, output = run_command(["pam-auth-update", "--disable", "pwhistory", "--force"])
         if success:
             logger.info("[CIS 5.3.3.3.2][REVERT] pam_pwhistory modülü devre dışı bırakıldı.")
         else:
             logger.warning(f"[CIS 5.3.3.3.2][REVERT] pam-auth-update başarısız: {output}")
-            run_command(["sed", "-ri", r"/pam_pwhistory\.so/d", common_password])
-            logger.info("[CIS 5.3.3.3.2][REVERT] common-password içinden pam_pwhistory manuel kaldırıldı.")
 
-        return True, "pam_pwhistory enforce_for_root revert edildi (CIS uyumsuz duruma döndü)."
+        # common-password dosyasında parametre temizliği
+        if os.path.exists(common_password):
+            run_command(["sed", "-ri", r"s/\benforce_for_root\b//g", common_password])
+            run_command(["sed", "-ri", r"s/\bremember=\d+\b//g", common_password])
+            logger.info("[CIS 5.3.3.3.2][REVERT] common-password içindeki enforce_for_root ve remember parametreleri kaldırıldı.")
+
+        return True, "pam_pwhistory enforce_for_root ayarları geri alındı (CIS 5.3.3.3.2 revert tamamlandı)."
 
     except Exception as e:
-        logger.error(f"[CIS 5.3.3.3.2][REVERT] Hata: {e}")
-        return False, f"Revert sırasında hata: {e}"
+        msg = f"Hata: {e}"
+        logger.error(f"[CIS 5.3.3.3.2][REVERT] {msg}")
+        return False, f"Revert sırasında hata: {msg}"
 
 
 def revert_password_history_use_authtok():
@@ -720,46 +908,10 @@ def revert_pam_unix_nullok():
 
 def revert_pam_unix_remember():
     """
-    CIS 5.3.3.4.2 revert
-    apply_pam_unix_remember ile kaldırılmış remember=<N> parametresini eski değerine geri alır.
-    Param:
-        param (dict): {"value": <N>} şeklinde eski değeri alır, yoksa 5 varsayılır.
+    CIS 5.3.3.4.2 revert.
     """
-    old_value = 5
-
-    try:
-        logger.info(f"[CIS 5.3.3.4.2][REVERT] remember parametresi eski değere ({old_value}) döndürülüyor...")
-
-        # Düzenlenecek PAM dosyaları
-        pam_files = [
-            "/etc/pam.d/common-password",
-            "/etc/pam.d/common-auth",
-            "/etc/pam.d/common-account",
-            "/etc/pam.d/common-session",
-            "/etc/pam.d/common-session-noninteractive"
-        ]
-
-        for file in pam_files:
-            if not os.path.exists(file):
-                continue
-
-
-            cmd = [
-                "bash", "-c",
-                f"if grep -q 'pam_unix.so' '{file}' && ! grep -q 'remember=' '{file}'; "
-                f"then sed -i '/pam_unix.so/ s/$/ remember={old_value}/' '{file}'; fi"
-            ]
-            success, output = run_command(cmd)
-            if success:
-                logger.info(f"[CIS 5.3.3.4.2][REVERT] {file} güncellendi, remember={old_value} eklendi.")
-            else:
-                logger.error(f"[CIS 5.3.3.4.2][REVERT] {file} güncellenemedi: {output}")
-
-        return True, f"remember parametresi eski değere ({old_value}) döndürüldü."
-    except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"[CIS 5.3.3.4.2][REVERT] {msg}")
-        return False, msg
+    logger.info("[CIS 5.3.3.4.2][REVERT] Revert gerekli değil;")
+    pass
 
 
 def revert_pam_unix_strong_hash():

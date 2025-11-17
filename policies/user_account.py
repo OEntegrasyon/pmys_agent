@@ -20,19 +20,19 @@ from logger import logger
 
 def check_password_expiration(max_days):
     """
-    /etc/login.defs içindeki PASS_MAX_DAYS ve /etc/shadow içindeki kullanıcı değerlerini kontrol eder.
+    CIS 5.4.1.1 - Ensure password expiration is configured
+    PASS_MAX_DAYS değerini /etc/login.defs ve /etc/shadow dosyalarında kontrol eder.
     """
     try:
-        # login.defs kontrolü
+        # 1. /etc/login.defs kontrolü
         with open("/etc/login.defs", "r") as f:
             content = f.readlines()
 
         current_value = None
         for line in content:
-            if line.strip().startswith("PASS_MAX_DAYS"):
-                parts = line.split()
-                if len(parts) >= 2 and parts[1].isdigit():
-                    current_value = int(parts[1])
+            match = re.match(r'^\s*PASS_MAX_DAYS\s+(\d+)', line)
+            if match:
+                current_value = int(match.group(1))
                 break
 
         if current_value is None:
@@ -43,23 +43,23 @@ def check_password_expiration(max_days):
             logger.warning(f"[CIS 5.4.1.1] PASS_MAX_DAYS uygunsuz: {current_value}")
             return False, current_value
 
-        # /etc/shadow kontrolü
+        # 2. /etc/shadow kontrolü
         bad_users = []
         with open("/etc/shadow", "r") as f:
             for line in f:
-                parts = line.split(":")
+                parts = line.strip().split(":")
                 if len(parts) > 5:
                     user, passwd, _, _, max_days_field = parts[:5]
-                    if passwd.startswith("$"):  # şifreli kullanıcı
+                    if re.match(r'^\$.+', passwd):  # şifreli kullanıcı
                         try:
                             val = int(max_days_field)
                             if val > max_days or val < 1:
                                 bad_users.append(f"{user}:{val}")
                         except ValueError:
-                            pass
+                            logger.warning(f"[CIS 5.4.1.1] {user} için geçersiz PASS_MAX_DAYS değeri: {max_days_field}")
 
         if bad_users:
-            logger.warning(f"[CIS 5.4.1.1] Uygunsuz kullanıcılar bulundu: {', '.join(bad_users)}")
+            logger.warning(f"[CIS 5.4.1.1] Uygunsuz kullanıcılar: {', '.join(bad_users)}")
             return False, current_value
 
         logger.info(f"[CIS 5.4.1.1] PASS_MAX_DAYS doğru: {current_value}")
@@ -70,25 +70,15 @@ def check_password_expiration(max_days):
         return False, None
 
 
-
 def apply_password_expiration(username=None, param=None):
     """
-    Tüm kullanıcılar için parola maksimum geçerlilik süresini ayarla.
     CIS 5.4.1.1 - Ensure password expiration is configured
-
-    Parametre:
-        param (dict): {"max_days": "30"} gibi
-    
-    Returns:
-        (bool, str): Başarı durumu ve mesaj
+    Tüm kullanıcılar için PASS_MAX_DAYS değerini uygular.
     """
     try:
-        max_days = param.get("max_days")
-        if not max_days:
-            return False, "max_days parametresi eksik."
-
-        # 1. login.defs dosyasını güncelle
+        max_days = int(param.get("max_days", 365))
         login_defs = "/etc/login.defs"
+
         if not os.path.exists(login_defs):
             return False, f"{login_defs} bulunamadı."
 
@@ -107,22 +97,28 @@ def apply_password_expiration(username=None, param=None):
         if not updated:
             new_lines.append(f"PASS_MAX_DAYS   {max_days}\n")
 
-        backup_file = f"{login_defs}.bak_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        os.rename(login_defs, backup_file)
+        backup_file = f"{login_defs}.bak"
+        if not os.path.exists(backup_file):
+            os.rename(login_defs, backup_file)
+            logger.info(f"[apply_password_expiration] Yedek oluşturuldu: {backup_file}")
+        else:
+            os.remove(backup_file)
+            os.rename(login_defs, backup_file)
+            logger.info(f"[apply_password_expiration] Mevcut yedek yenilendi: {backup_file}")
 
         with open(login_defs, "w") as f:
             f.writelines(new_lines)
 
         logger.info(f"[apply_password_expiration] {login_defs} PASS_MAX_DAYS {max_days} olarak güncellendi.")
 
-        # 2. Sistemdeki kullanıcıları güncelle
-        cmd = ["chage", "--maxdays", str(max_days), "root"]
-        run_command(cmd)
+        # 2. root kullanıcısı için maxdays + last change date ayarla
+        run_command(["chage", "--maxdays", str(max_days), "root"])
+        run_command(["chage", "-d", datetime.now().strftime("%Y-%m-%d"), "root"])
 
-        # Normal kullanıcıları güncelle
+        # 3. Normal kullanıcılar için uygula
         with open("/etc/passwd", "r") as f:
             for line in f:
-                parts = line.split(":")
+                parts = line.strip().split(":")
                 if len(parts) > 2:
                     user = parts[0]
                     uid = int(parts[2])
@@ -134,8 +130,7 @@ def apply_password_expiration(username=None, param=None):
     except Exception as e:
         msg = f"Hata: {str(e)}"
         logger.error(f"[apply_password_expiration] {msg}")
-        return False, f"Hata: {msg}"
-
+        return False, msg
 
 
 
@@ -230,8 +225,8 @@ def apply_min_password_days(username=None, param=None):
         if not os.path.exists(login_defs):
             return False, "/etc/login.defs bulunamadı"
 
-        bak = f"{login_defs}.bak_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        shutil.copy(login_defs, bak)
+        bak = f"{login_defs}.bak"
+        shutil.copy(login_defs, bak)   
         logger.info(f"[apply_min_password_days] Yedek alındı: {bak}")
 
         # Dosyayı oku ve update et (yorum satırlarını koruyarak)
@@ -313,8 +308,8 @@ def check_password_warn_days(expected_value=7):
 
         if defs_value is None:
             return False, "PASS_WARN_AGE bulunamadı"
-        if defs_value != expected_value:
-            return False, f"/etc/login.defs PASS_WARN_AGE={defs_value}, beklenen {expected_value}"
+        if defs_value < expected_value:
+            return False, f"/etc/login.defs PASS_WARN_AGE={defs_value}, beklenen en az {expected_value}"
 
         # /etc/shadow kontrolü (WARN alanı = index 5)
         bad_users = []
@@ -326,7 +321,7 @@ def check_password_warn_days(expected_value=7):
                         warn_days = int(parts[5]) if parts[5] else 0
                     except (ValueError, IndexError):
                         warn_days = 0
-                    if warn_days != expected_value:
+                    if warn_days < expected_value:
                         bad_users.append(f"{parts[0]}:{warn_days}")
 
         if bad_users:
@@ -396,10 +391,10 @@ def apply_password_warn_days(username=None, param=None):
 
 
 
-
 def check_password_hashing_algorithm(expected_algorithms=("SHA512", "YESCRYPT")):
     """
     CIS 5.4.1.4 - Ensure strong password hashing algorithm is configured
+    /etc/login.defs içindeki ENCRYPT_METHOD ayarını kontrol eder.
     """
     try:
         cmd = ["grep", "-Pi", r"^\s*ENCRYPT_METHOD\s+\w+", "/etc/login.defs"]
@@ -423,7 +418,7 @@ def check_password_hashing_algorithm(expected_algorithms=("SHA512", "YESCRYPT"))
         return True, f"ENCRYPT_METHOD doğru: {current_alg}"
 
     except Exception as e:
-        logger.error(f"check_password_hashing_algorithm hata: {e}")
+        logger.error(f"[CIS 5.4.1.4][CHECK] Hata: {e}")
         return False, str(e)
 
 
@@ -431,7 +426,7 @@ def check_password_hashing_algorithm(expected_algorithms=("SHA512", "YESCRYPT"))
 def apply_password_hashing_algorithm(username=None, param=None):
     """
     CIS 5.4.1.4 - Ensure strong password hashing algorithm is configured
-    ENCRYPT_METHOD değerini uygular (SHA512 veya YESCRYPT)
+    ENCRYPT_METHOD değerini SHA512 veya YESCRYPT olarak ayarlar.
     """
     try:
         param = param or {}
@@ -443,20 +438,41 @@ def apply_password_hashing_algorithm(username=None, param=None):
 
         logger.info(f"[APPLY][password_hashing_algorithm] Uyumsuz: {msg} → Düzeltiliyor...")
 
-        # Sed ile güncelleme dene
-        update_cmd = [
-            "bash", "-c",
-            rf"if grep -Pi '^\s*ENCRYPT_METHOD' /etc/login.defs >/dev/null; "
-            rf"then sed -i 's|^\s*ENCRYPT_METHOD.*|ENCRYPT_METHOD {expected_algorithm}|' /etc/login.defs; "
-            rf"else echo 'ENCRYPT_METHOD {expected_algorithm}' >> /etc/login.defs; fi"
-        ]
-        run_command(update_cmd)
+        login_defs = "/etc/login.defs"
+        backup_file = f"{login_defs}.bak"
+
+        try:
+            shutil.copy(login_defs, backup_file)
+            logger.info(f"[APPLY][password_hashing_algorithm] Yedek oluşturuldu: {backup_file}")
+        except Exception as e:
+            logger.warning(f"[APPLY][password_hashing_algorithm] Yedekleme hatası: {e}")
+
+        # Dosyayı oku, yorumları koruyarak güncelle
+        new_lines = []
+        updated = False
+        with open(login_defs, "r", encoding="utf-8") as f:
+            for line in f:
+                if re.match(r"^\s*ENCRYPT_METHOD\s+\w+", line) and not line.strip().startswith("#"):
+                    new_lines.append(f"ENCRYPT_METHOD {expected_algorithm}\n")
+                    updated = True
+                else:
+                    new_lines.append(line)
+
+        if not updated:
+            new_lines.append(f"\nENCRYPT_METHOD {expected_algorithm}\n")
+
+        tmp_path = f"{login_defs}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+        os.replace(tmp_path, login_defs)
+
+        logger.info(f"[APPLY][password_hashing_algorithm] /etc/login.defs güncellendi → ENCRYPT_METHOD {expected_algorithm}")
 
         # Yeniden doğrulama
         ok2, msg2 = check_password_hashing_algorithm((expected_algorithm,))
         if ok2:
             logger.info(f"[APPLY][password_hashing_algorithm] ENCRYPT_METHOD başarıyla {expected_algorithm} olarak ayarlandı.")
-            return True, f"ENCRYPT_METHOD başarıyla {expected_algorithm} olarak ayarlandı"
+            return True, f"ENCRYPT_METHOD başarıyla {expected_algorithm} olarak ayarlandı."
         else:
             logger.error(f"[APPLY][password_hashing_algorithm] Doğrulama başarısız: {msg2}")
             return False, f"Ayar sonrası doğrulama başarısız: {msg2}"
@@ -579,8 +595,6 @@ def apply_inactive_password_lock(username=None, param=None):
         return True, f"Tüm kullanıcılar için INACTIVE {days} olarak başarıyla uygulandı."
     else:
         return False, f"Ayar sonrası doğrulama başarısız: {msg}"
-
-
 
 
 
@@ -828,8 +842,9 @@ def apply_only_root_gid0(username=None, param=None):
         run_command(["groupmod", "-g", "0", "root"])
         logger.info("Root grubunun GID değeri 0 olarak ayarlandı.")
 
-        cmd = r"awk -F: '($1 !~ /^(sync|shutdown|halt|operator|root)/ && $4==\"0\") {print $1}' /etc/passwd"
-        success, out = run_command([cmd])
+        success, out = run_command([
+            "awk", "-F:", '($1 !~ /^(sync|shutdown|halt|operator|root)/ && $4=="0") {print $1}', "/etc/passwd"
+        ])
         users = out.strip().splitlines()
 
         if users:
@@ -1507,88 +1522,91 @@ def apply_ensure_nologin_not_in_shells(username=None, param=None):
 
 def check_ensure_shell_timeout():
     """
-    5.4.3.2 Ensure default user shell timeout is configured
-    CIS Benchmark Level 1 - Server/Workstation
+    CIS 5.4.3.2 - Default user shell timeout (TMOUT) kontrolü.
+    Gereksinimler:
+      - TMOUT <= 900 olmalı
+      - readonly TMOUT olmalı
+      - export TMOUT olmalı
+      - Hatalı TMOUT (0, 900+, 4+ haneli sayı) olmamalı
     """
     try:
-        files = ["/etc/bashrc", "/etc/profile", "/etc/profile.d/*.sh"]
+        target_files = ["/etc/bashrc", "/etc/profile"] + \
+                       [f"/etc/profile.d/{f}" for f in os.listdir("/etc/profile.d") if f.endswith(".sh")]
 
+        found_valid = False
+        found_invalid = False
 
-        check_command = [
-            "bash", "-c",
-            r"grep -Pq '^\s*TMOUT=(900|[1-8][0-9][0-9]|[1-9][0-9]?|[1-9])\b' " + " ".join(files)
-        ]
-        success_tmout, _ = run_command(check_command)
+        re_tmout_valid = re.compile(r'^\s*TMOUT=(900|[1-8][0-9][0-9]|[1-9][0-9]|[1-9])\b')
+        re_tmout_readonly = re.compile(r'^\s*(readonly\s+TMOUT(\s+|;|$))')
+        re_tmout_export = re.compile(r'^\s*(export\s+TMOUT(\s+|;|$))')
 
-        check_command_readonly = [
-            "bash", "-c",
-            r"grep -Pq '^\s*readonly\s+TMOUT(\s+|;|$)' " + " ".join(files)
-        ]
-        success_readonly, _ = run_command(check_command_readonly)
+        re_tmout_invalid = re.compile(r'^\s*TMOUT=(0+|9[0-9][1-9]|9[1-9][0-9]|[1-9]\d{3,})\b')
 
-        check_command_export = [
-            "bash", "-c",
-            r"grep -Pq '^\s*export\s+TMOUT(\s+|;|$)' " + " ".join(files)
-        ]
-        success_export, _ = run_command(check_command_export)
+        for file in target_files:
+            if not os.path.exists(file):
+                continue
 
-        invalid_command = [
-            "bash", "-c",
-            r"grep -Pq '^\s*TMOUT=(0+|9[0-9][1-9]|9[1-9][0-9]|[1-9]\d{3,})\b' " + " ".join(files)
-        ]
-        success_invalid, _ = run_command(invalid_command)
+            with open(file, "r") as f:
+                for line in f:
+                    s = line.strip()
 
-        if success_tmout and success_readonly and success_export and not success_invalid:
-            logger.info("[CHECK] TMOUT doğru şekilde yapılandırılmış (<=900, readonly, export).")
-            return True, "TMOUT doğru şekilde yapılandırılmış."
-        else:
-            logger.warning("[CHECK] TMOUT doğru şekilde yapılandırılmamış veya hatalı değer var.")
-            return False, "TMOUT yapılandırması eksik veya hatalı."
+                    if re_tmout_valid.search(s):
+                        found_valid = True
+                    if re_tmout_invalid.search(s):
+                        found_invalid = True
+                    
+                    if re_tmout_readonly.search(s):
+                        readonly_ok = True
+
+                    if re_tmout_export.search(s):
+                        export_ok = True
+
+        if found_valid and readonly_ok and export_ok and not found_invalid:
+            return True, "TMOUT CIS'e uygun yapılandırılmış."
+
+        return False, "TMOUT yapılandırması eksik veya hatalı."
+
     except Exception as e:
-        logger.error(f"[CHECK] Hata oluştu: {e}")
-        return False, str(e)
+        return False, f"Hata: {str(e)}"
 
 
 def apply_ensure_shell_timeout(username=None, param=None):
     """
-    5.4.3.2 Ensure default user shell timeout is configured
-    CIS Benchmark Level 1 - Server/Workstation
+    CIS 5.4.3.2 uyumlu TMOUT yapılandırması uygular.
+    Tüm TMOUT ayarlarını /etc/profile.d/timeout.sh dosyasında güvenli şekilde toplar.
     """
     try:
-        success, message = check_ensure_shell_timeout()
-        if success:
-            return True, "Herhangi bir işlem yapılmasına gerek yok."
+        ok, _ = check_ensure_shell_timeout()
+        if ok:
+            return True, "TMOUT zaten CIS'e uygun."
 
-        remediation_command = [
-            "bash", "-c",
-            "grep -qxF 'TMOUT=900' /etc/profile.d/timeout.sh || echo 'TMOUT=900' >> /etc/profile.d/timeout.sh; "
-            "grep -qxF 'readonly TMOUT' /etc/profile.d/timeout.sh || echo 'readonly TMOUT' >> /etc/profile.d/timeout.sh; "
-            "grep -qxF 'export TMOUT' /etc/profile.d/timeout.sh || echo 'export TMOUT' >> /etc/profile.d/timeout.sh"
+        timeout_file = "/etc/profile.d/timeout.sh"
+
+        lines = [
+            "TMOUT=900\n",
+            "readonly TMOUT\n",
+            "export TMOUT\n"
         ]
-        success_apply, output_apply = run_command(remediation_command)
 
-        if success_apply:
-            logger.info("[APPLY] TMOUT değeri /etc/profile.d/timeout.sh dosyasına eklendi.")
-            return True, "TMOUT değeri /etc/profile.d/timeout.sh dosyasına eklendi."
-        else:
-            logger.error(f"[APPLY] TMOUT ayarlanamadı: {output_apply}")
-            return False, output_apply
+        with open(timeout_file, "w") as f:
+            f.writelines(lines)
+
+        return True, "TMOUT değeri CIS uyumlu şekilde /etc/profile.d/timeout.sh içine yazıldı."
 
     except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"[APPLY] Hata oluştu: {msg}")
-        return False, msg
+        return False, f"Hata: {str(e)}"
 
 
 
 def check_umask():
     """
-    CIS 5.4.3.3 - Ensure default user umask is configured
+    CIS 5.4.3.3 - Ensure default user umask is configured (FULL CIS COMPLIANT)
     """
     try:
         config_files = [
             "/etc/profile",
             "/etc/bashrc",
+            "/etc/bash.bashrc",
             "/etc/login.defs",
             "/etc/default/login",
             "/etc/pam.d/postlogin",
@@ -1600,71 +1618,84 @@ def check_umask():
                 if f.endswith(".sh"):
                     config_files.append(os.path.join(profile_d, f))
 
-        SAFE_UMASKS = {"027", "037", "077"}
-        insecure_files = []
+        # CIS'e göre güvenli numeric umask: 027, 037, 047, 057, 067, 077
+        SAFE_NUMERIC = {f"0{a}{b}7" for a in range(0, 8) for b in range(2, 8)}
+        SAFE_NUMERIC.update({"027", "037", "047", "057", "067", "077"})
+
+        insecure_entries = []
         valid_found = False
 
         for file_path in config_files:
             if not os.path.exists(file_path):
                 continue
+
             with open(file_path, "r") as f:
                 for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
+                    text = line.strip()
+                    if not text or text.startswith("#"):
                         continue
 
-                    if re.match(r"^\s*umask\s+(0[0-7]{2}|[0-7]{3})", line):
-                        val = re.findall(r"umask\s+([0-7]+)", line)[0]
-                        if val in SAFE_UMASKS:
+                    # Numeric umask (027, 037, 077...)
+                    if re.match(r"^\s*umask\s+[0-7]{3}$", text):
+                        val = text.split()[1]
+                        if val in SAFE_NUMERIC:
                             valid_found = True
-                            logger.info(f"[CHECK] {file_path}: güvenli umask {val}")
+                            logger.info(f"[CHECK] Güvenli umask bulundu: {file_path} -> {val}")
                         else:
-                            insecure_files.append(f"{file_path} -> {val}")
-                    elif re.match(r"^\s*umask\s+u=.*", line):  # symbolic
-                        if "o=" in line and not any(p in line for p in ["o=w", "o=rw", "o=rwx"]):
+                            insecure_entries.append(f"{file_path}: {val}")
+                        continue
+
+                    # Symbolic umask (u=rwx,g=rx,o=)
+                    if re.match(r"^\s*umask\s+u=.*", text):
+                        # CIS'e göre o= kısmı boş veya sadece --- olmalı (rw* kabul edilmez)
+                        if "o=" in text and not any(x in text for x in ["o=w", "o=rw", "o=rwx"]):
                             valid_found = True
-                            logger.info(f"[CHECK] {file_path}: güvenli symbolic umask {line}")
+                            logger.info(f"[CHECK] Güvenli symbolic umask: {file_path} -> {text}")
                         else:
-                            insecure_files.append(f"{file_path} -> {line}")
+                            insecure_entries.append(f"{file_path}: {text}")
 
-        if insecure_files:
-            logger.warning("[CHECK] Zayıf umask bulunan dosyalar:\n" + "\n".join(insecure_files))
-            return False, "Zayıf umask ayarları var."
+        if insecure_entries:
+            return False, "Zayıf umask ayarları bulundu: " + ", ".join(insecure_entries)
 
-        if valid_found:
-            return True, "Tüm umask ayarları güvenli."
-        else:
+        if not valid_found:
             return False, "Hiçbir güvenli umask bulunamadı."
 
+        return True, "Varsayılan umask doğru yapılandırılmış."
+
     except Exception as e:
-        logger.error(f"[CHECK] Hata: {e}")
+        logger.error(f"[CHECK][UMASK] Hata: {e}")
         return False, str(e)
 
 
 
 def apply_umask(username=None, param=None):
     """
-    CIS 5.4.3.3 - Ensure default user umask is configured
-    CIS uyumlu umask ayarı uygular.
-    Parametre: {"value": "027"}
+    CIS 5.4.3.3 - Ensure default user umask is configured (FULL CIS COMPLIANT)
     """
     try:
-        desired_umask = param.get("value", "027")
+        desired_umask = (param or {}).get("value", "027")
 
-        # Eski umask satırlarını pasifleştir
-        for path in ["/etc/profile", "/etc/bashrc", "/etc/login.defs", "/etc/default/login"]:
+        # 1) PAM tarafındaki umask ayarlarını kaldır (CIS gereği shell override etmemeli)
+        pam_file = "/etc/pam.d/postlogin"
+        if os.path.exists(pam_file):
+            run_command(["bash", "-c",
+                        "sed -i 's/^.*pam_umask.so.*umask=.*$/# &/' /etc/pam.d/postlogin"])
+
+        # 2) Shell dosyalarındaki tüm eski umask tanımlarını yorum satırı yap
+        for path in ["/etc/profile", "/etc/bashrc", "/etc/bash.bashrc",
+                     "/etc/login.defs", "/etc/default/login"]:
             if os.path.exists(path):
                 run_command(["bash", "-c", f"sed -i 's/^umask/#&/' {path}"])
 
-        # Yeni umask dosyası oluştur
-        config_file = "/etc/profile.d/50-systemwide_umask.sh"
-        with open(config_file, "w") as f:
+        # 3) /etc/profile.d içine merkez tek bir umask tanımı oluştur
+        umask_file = "/etc/profile.d/50-systemwide_umask.sh"
+        with open(umask_file, "w") as f:
             f.write(f"umask {desired_umask}\n")
 
-        logger.info(f"[APPLY] {config_file} dosyasına umask {desired_umask} yazıldı.")
-        return True, f"umask {desired_umask} olarak ayarlandı"
+        logger.info(f"[APPLY] Sistem-wide umask {desired_umask} olarak ayarlandı.")
+        return True, f"umask {desired_umask} olarak ayarlandı."
 
     except Exception as e:
-        msg = f"Hata: {e}"
-        logger.error(f"[APPLY] {msg}")
+        msg = f"UMASK APPLY ERROR: {e}"
+        logger.error(msg)
         return False, msg

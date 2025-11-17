@@ -277,72 +277,143 @@ def apply_pam_unix_enabled(username=None, param=None):
 
 def check_pam_faillock_enabled():
     """
-    5.3.2.2 Ensure pam_faillock module is enabled
-    pam_faillock modülünün etkin olup olmadığını kontrol eder.
+    CIS 5.3.2.2 - Ensure pam_faillock module is enabled
+    CIS uyumlu doğrulama
     """
+
     try:
-        # common-auth ve common-account içinde pam_faillock satırlarını ara
-        ok, output = run_command(["grep", "-P", r"\bpam_faillock\.so\b",
-                          "/etc/pam.d/common-auth", "/etc/pam.d/common-account"])
-        if ok and "pam_faillock.so" in output:
-            return True, "pam_faillock modülü etkin."
+        results = {
+            "preauth": False,
+            "authfail": False,
+            "account": False
+        }
+
+        # /etc/pam.d/common-auth içeriğini oku
+        with open("/etc/pam.d/common-auth", "r") as f:
+            auth_lines = f.readlines()
+
+        # /etc/pam.d/common-account içeriğini oku
+        with open("/etc/pam.d/common-account", "r") as f:
+            account_lines = f.readlines()
+
+        # preauth ve authfail kontrolü
+        for line in auth_lines:
+            line_s = line.strip()
+
+            if "pam_faillock.so" in line_s and "preauth" in line_s and "requisite" in line_s:
+                results["preauth"] = True
+
+            if "pam_faillock.so" in line_s and "authfail" in line_s and "[default=die]" in line_s:
+                results["authfail"] = True
+
+        # account reset kontrolü
+        for line in account_lines:
+            line_s = line.strip()
+            if "pam_faillock.so" in line_s and line_s.startswith("account"):
+                results["account"] = True
+
+        # Sonuç analizi
+        if all(results.values()):
+            return True, "CIS uyumlu: pam_faillock modülü doğru şekilde etkin."
         else:
-            return False, "pam_faillock modülü etkin değil."
+            missing = [k for k, v in results.items() if not v]
+            return False, f"CIS uyumsuz: Eksik bölümler: {', '.join(missing)}"
+
     except Exception as e:
-        return False, f"Kontrol sırasında hata oluştu: {e}"
+        return False, f"Kontrol hatası: {str(e)}"
 
 
 def apply_pam_faillock(username=None, param=None):
     """
-    5.3.2.2 Ensure pam_faillock module is enabled
-    pam_faillock modülünü etkinleştirir.
+    CIS 5.3.2.2 - Ensure pam_faillock module is enabled
+    Debian/Pardus uyumlu pam-config profilleri oluşturur ve etkinleştirir.
     """
+    logger.warning("TEST: apply_pam_faillock fonksiyonu ÇALIŞTI!")
+
     try:
-        is_enabled, message = check_pam_faillock_enabled()
+        # Ön kontrol
+        is_enabled, msg = check_pam_faillock_enabled()
         if is_enabled:
-            return True, f"Değişiklik gerekmedi: {message}"
+            return True, f"Değişiklik gerekmedi: {msg}"
+        logger.warning("TEST: apply_pam_faillock fonksiyonu ÇALIŞTI!")
+        logger.info("[PAMmmmmmmmmmmmm Faillock][APPLY] faillock profilleri oluşturuluyor...")
 
-    
-        # faillock profili oluştur
-        faillock_conf = """Name: Enable pam_faillock to deny access
-Default: yes
-Priority: 0
-Auth-Type: Primary
-Auth:
- [default=die] pam_faillock.so authfail
-"""
-        with open("/usr/share/pam-configs/faillock", "w") as f:
-            f.write(faillock_conf)
+        # ------------------------------------------------------------
+        # PROFİL 1: faillock
+        # ------------------------------------------------------------
 
-        # faillock_notify profili oluştur
-        faillock_notify_conf = """Name: Notify of failed login attempts and reset count upon success
-Default: yes
-Priority: 1024
-Auth-Type: Primary
-Auth:
- requisite pam_faillock.so preauth
-Account-Type: Primary
-Account:
- required pam_faillock.so
-"""
-        with open("/usr/share/pam-configs/faillock_notify", "w") as f:
-            f.write(faillock_notify_conf)
+        faillock_profile = (
+            "Name: Enable pam_faillock to deny access\n"
+            "Default: yes\n"
+            "Priority: 0\n"
+            "Auth-Type: Primary\n"
+            "Auth:\n"
+            "    [default=die] pam_faillock.so authfail\n"
+        )
 
-        # pam-auth-update ile profilleri etkinleştir
+        with open("/usr/share/pam-configs/faillock", "w", encoding="utf-8") as f:
+            f.write(faillock_profile)
+
+        # ------------------------------------------------------------
+        # PROFİL 2: faillock_notify
+        # ------------------------------------------------------------
+
+        faillock_notify_profile = (
+            "Name: Notify of failed login attempts and reset count upon success\n"
+            "Default: yes\n"
+            "Priority: 1024\n"
+            "Auth-Type: Primary\n"
+            "Auth:\n"
+            "    requisite pam_faillock.so preauth\n"
+            "Account-Type: Primary\n"
+            "Account:\n"
+            "    required pam_faillock.so\n"
+        )
+
+        with open("/usr/share/pam-configs/faillock_notify", "w", encoding="utf-8") as f:
+            f.write(faillock_notify_profile)
+
+        # ------------------------------------------------------------
+        # DOSYALAR OLUŞTU MU? (Güvenlik kontrolü)
+        # ------------------------------------------------------------
+        import os
+
+        if not os.path.exists("/usr/share/pam-configs/faillock"):
+            return False, "faillock dosyası oluşturulamadı!"
+
+        if not os.path.exists("/usr/share/pam-configs/faillock_notify"):
+            return False, "faillock_notify dosyası oluşturulamadı!"
+
+        logger.info("[PAM Faillock][APPLY] faillock profilleri oluşturuldu. pam-auth-update çalıştırılıyor...")
+
+        # ------------------------------------------------------------
+        # PROFİLLERİ AKTİF ET
+        # ------------------------------------------------------------
 
         success, output = run_command(["pam-auth-update", "--enable", "faillock"])
         if not success:
-            return False, f"pam-auth-update çalıştırılamadı: {output}"
+            return False, f"faillock profili etkinleştirilemedi: {output}"
 
         success, output = run_command(["pam-auth-update", "--enable", "faillock_notify"])
         if not success:
-            return False, f"pam-auth-update çalıştırılamadı: {output}"
-        
-        return True, "pam_faillock modülü etkinleştirildi."
+            return False, f"faillock_notify profili etkinleştirilemedi: {output}"
+
+        # ------------------------------------------------------------
+        # SON KONTROL
+        # ------------------------------------------------------------
+
+        is_enabled, msg = check_pam_faillock_enabled()
+
+        if is_enabled:
+            return True, "pam_faillock modülü başarıyla etkinleştirildi."
+        else:
+            return False, "pam_faillock modülü etkinleştirilemedi."
+
     except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"[CIS 5.3.2.2][APPLY] {msg}")
-        return False, f"Uygulama sırasında hata oluştu: {msg}"
+        logger.error(f"[CIS 5.3.2.2][APPLY] Hata: {str(e)}")
+        return False, f"Hata oluştu: {str(e)}"
+
+
 
 
 
@@ -497,60 +568,52 @@ DEFAULT_DENY = 5
 def check_failed_attempts_lockout(expected_deny=DEFAULT_DENY):
     """
     CIS 5.3.3.1.1 - Ensure password failed attempts lockout is configured
-    Kontroller:
-      1. /etc/security/faillock.conf içinde deny değeri 5 veya altı olmalı.
-      2. /etc/pam.d/common-auth içinde pam_faillock.so satırlarında deny= parametresi olmamalı.
-      3. pam_faillock.so modülü common-auth ve common-account dosyalarında tanımlı olmalı.
+    Koşullar:
+      - /etc/security/faillock.conf -> deny = 5 (veya <=5)
+      - common-auth içinde pam_faillock satırlarında deny= bulunmamalı
     """
-    if not os.path.exists(FAILLOCK_CONF):
-        return False, f"{FAILLOCK_CONF} bulunamadı."
-
     try:
-        with open(FAILLOCK_CONF, "r") as f:
-            lines = f.readlines()
+        if not os.path.exists(FAILLOCK_CONF):
+            return False, f"{FAILLOCK_CONF} bulunamadı."
 
         deny_value = None
-        for line in lines:
-            if re.match(r'^\s*#', line):
-                continue
-            if re.match(r'^\s*deny\s*=', line):
-                try:
-                    deny_value = int(line.split("=")[1].strip())
-                except Exception:
+        with open(FAILLOCK_CONF, "r") as f:
+            for line in f:
+                if re.match(r'^\s*#', line):
                     continue
+                if re.match(r'^\s*deny\s*=', line):
+                    try:
+                        deny_value = int(line.split("=")[1].strip())
+                    except:
+                        pass
 
         if deny_value is None:
             return False, "deny parametresi faillock.conf içinde bulunamadı."
         if deny_value > expected_deny:
-            return False, f"deny={deny_value}, beklenen ≤ {expected_deny}."
+            return False, f"deny={deny_value}, beklenen <= {expected_deny}"
 
-        bad_lines = subprocess.run([
+        # common-auth içinde hatalı deny= var mı?
+        cmd = [
             "grep", "-Pi",
             r'^\s*auth.*pam_faillock\.so.*\bdeny\s*=\s*(0|[6-9]|[1-9][0-9]+)\b',
             "/etc/pam.d/common-auth"
-        ], stdout=subprocess.PIPE, text=True)
-        if bad_lines.stdout.strip():
-            return False, f"common-auth içinde uygunsuz deny parametresi bulundu:\n{bad_lines.stdout}"
+        ]
+        ok, out = run_command(cmd)
+        if ok and out.strip():
+            return False, f"common-auth içinde hatalı deny parametresi var:\n{out}"
 
-        mod_check = subprocess.run(
-            ["grep", "-H", "pam_faillock.so", "/etc/pam.d/common-auth", "/etc/pam.d/common-account"],
-            stdout=subprocess.PIPE, text=True
-        )
-        if not mod_check.stdout.strip():
-            return False, "pam_faillock.so modülü PAM zincirine dahil edilmemiş."
-
-        return True, f"deny={deny_value}, yapılandırma CIS gereksinimlerine uygun."
+        return True, f"deny={deny_value}, CIS 5.3.3.1.1 uyumlu."
 
     except Exception as e:
-        return False, f"Hata (check_failed_attempts_lockout): {e}"
+        return False, f"Hata: {e}"
 
 
 
 
 def apply_failed_attempts_lockout(username=None, param=None):
     """
-    CIS 5.3.3.1.1 - Ensure password failed attempts lockout is configured
-    Hem faillock.conf dosyasını hem PAM modül entegrasyonunu düzenler.
+    CIS 5.3.3.1.1 - deny değerini 5 yapar, yoksa ekler.
+    common-auth içinde deny= parametresini temizler.
     """
     try:
         param = param or {}
@@ -560,107 +623,63 @@ def apply_failed_attempts_lockout(username=None, param=None):
         if ok:
             return True, f"Ayar zaten uygun: {msg}"
 
-        backup_path = FAILLOCK_CONF + ".bak"
-        shutil.copy2(FAILLOCK_CONF, backup_path)
+        run_command(["sed", "-Ei", "s/^\\s*deny\\s*=.*/deny = 5/", FAILLOCK_CONF])
 
-        new_lines, deny_found = [], False
-        with open(FAILLOCK_CONF, "r") as f:
-            for line in f:
-                if re.match(r'^\s*deny\s*=', line):
-                    new_lines.append(f"deny = {expected_deny}\n")
-                    deny_found = True
-                else:
-                    new_lines.append(line)
+        run_command(["bash", "-c", f"grep -Pq '^\\s*deny\\s*=' {FAILLOCK_CONF} || echo 'deny = 5' >> {FAILLOCK_CONF}"])
 
-        if not deny_found:
-            new_lines.append(f"deny = {expected_deny}\n")
+        run_command([
+            "sed", "-Ei",
+            "/pam_faillock.so/ s/ deny=[0-9]+//g",
+            "/etc/pam.d/common-auth"
+        ])
 
-        with open(FAILLOCK_CONF, "w") as f:
-            f.writelines(new_lines)
-
-        common_auth = "/etc/pam.d/common-auth"
-        common_account = "/etc/pam.d/common-account"
-
-        def ensure_line(file_path, pattern, new_line, append_end=False):
-            with open(file_path, "r") as f:
-                content = f.read()
-            if pattern not in content:
-                with open(file_path, "a" if append_end else "r+") as f:
-                    if not append_end:
-                        f.seek(0, 0)
-                        f.write(new_line + "\n" + content)
-                    else:
-                        f.write("\n" + new_line)
-
-        ensure_line(common_auth, "pam_faillock.so preauth", "auth requisite pam_faillock.so preauth")
-        ensure_line(common_auth, "pam_faillock.so authfail", "auth [default=die] pam_faillock.so authfail", append_end=True)
-        ensure_line(common_account, "pam_faillock.so", "account required pam_faillock.so", append_end=True)
-
-        pam_dir = "/usr/share/pam-configs"
-        if os.path.exists(pam_dir):
-            for root, _, files in os.walk(pam_dir):
-                for fname in files:
-                    fpath = os.path.join(root, fname)
-                    with open(fpath, "r") as f:
-                        content = f.read()
-                    if "pam_faillock.so" in content and "deny=" in content:
-                        cleaned = "\n".join(
-                            " ".join(p for p in line.split() if not p.startswith("deny="))
-                            for line in content.splitlines()
-                        )
-                        with open(fpath, "w") as f:
-                            f.write(cleaned)
-
-        final_ok, final_msg = check_failed_attempts_lockout(expected_deny)
-        if final_ok:
-            return True, f"faillock.conf ve PAM yapılandırması başarıyla güncellendi. ({final_msg})"
+        ok, msg = check_failed_attempts_lockout(expected_deny)
+        if ok:
+            return True, f"Başarıyla uygulandı. ({msg})"
         else:
-            return False, f"Düzenleme yapıldı ancak doğrulama başarısız: {final_msg}"
+            return False, f"Uygulandı fakat doğrulama başarısız: {msg}"
 
     except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"[CIS 5.3.3.1.1][APPLY] {msg}")
-        return False, f"Hata: {msg}"
+        return False, f"Hata: {e}"
 
 
 
-BACKUP_FILE = "/etc/security/faillock.conf.bak"
+DEFAULT_UNLOCK = 900
+
 
 def check_unlock_time(param=None):
     """
     CIS 5.3.3.1.2 - Ensure password unlock time is configured
-    Gereksinimler:
-      - /etc/security/faillock.conf içinde unlock_time >= 900 veya 0
-      - /etc/pam.d/common-auth içinde pam_faillock.so satırlarında unlock_time parametresi olmamalı
+    unlock_time 0 veya >= 900 olmalıdır ve PAM dosyalarında unlock_time olmamalıdır.
     """
+
     try:
-        expected_seconds = max(int((param or {}).get("unlock_time", 900)), 900)
+        expected = int((param or {}).get("unlock_time", DEFAULT_UNLOCK))
+        if expected < 900 and expected != 0:
+            expected = 900
 
         if not os.path.exists(FAILLOCK_CONF):
-            return False, f"{FAILLOCK_CONF} bulunamadı."
+            return False, f"{FAILLOCK_CONF} dosyası yok."
 
+        # unlock_time kontrol
         with open(FAILLOCK_CONF, "r") as f:
-            content = f.read()
+            data = f.read()
 
-        match = re.search(r'^\s*unlock_time\s*=\s*(\d+)', content, re.MULTILINE)
+        match = re.search(r'^\s*unlock_time\s*=\s*(\d+)', data, re.MULTILINE)
         if not match:
-            return False, "unlock_time parametresi faillock.conf içinde bulunamadı."
+            return False, "unlock_time ayarı dosyada bulunamadı."
 
-        current_value = int(match.group(1))
-        if not (current_value == 0 or current_value >= 900):
-            return False, f"unlock_time={current_value} (>=900 veya 0 olmalı)"
+        current = int(match.group(1))
+        if current != 0 and current < expected:
+            return False, f"unlock_time={current}, en az {expected} olmalı."
 
-        # PAM içinde uygunsuz unlock_time var mı kontrol et
-        bad_lines = subprocess.run([
-            "grep", "-Pi",
-            r'^\s*auth.*pam_faillock\.so.*\bunlock_time\s*=\s*([1-9]|[1-8][0-9]{1,2})\b',
-            "/etc/pam.d/common-auth"
-        ], stdout=subprocess.PIPE, text=True)
+        # PAM dosyalarında unlock_time olmamalı
+        cmd = r"grep -Pi '^\s*auth\s+(requisite|required|sufficient)\s+pam_faillock\.so\s+.*unlock_time\s*=' /etc/pam.d/common-auth"
+        result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, text=True)
+        if result.stdout.strip():
+            return False, f"PAM içinde unlock_time kaldırılmalı:\n{result.stdout.strip()}"
 
-        if bad_lines.stdout.strip():
-            return False, f"common-auth içinde uygunsuz unlock_time parametresi bulundu:\n{bad_lines.stdout}"
-
-        return True, f"unlock_time uygun: {current_value} saniye"
+        return True, f"unlock_time uygundur: {current}"
 
     except Exception as e:
         return False, f"Hata: {str(e)}"
@@ -668,159 +687,181 @@ def check_unlock_time(param=None):
 
 def apply_unlock_time(username=None, param=None):
     """
-    CIS 5.3.3.1.2 - Uygulama
-    unlock_time >= 900 saniye olacak şekilde ayarlar.
-    Eğer parametrede daha düşük verilirse bile 900 yapılır.
+    CIS 5.3.3.1.2 - unlock_time = 0 veya >= 900 olacak, PAM içinde unlock_time olmayacak
     """
-    try:
-        param = param or {}
-        expected_seconds = max(int(param.get("unlock_time", 900)), 900)
 
-        ok, msg = check_unlock_time(param)
+    try:
+        expected = int((param or {}).get("unlock_time", DEFAULT_UNLOCK))
+        if expected < 900 and expected != 0:
+            expected = 900
+
+        ok, msg = check_unlock_time({"unlock_time": expected})
         if ok:
             return True, f"Zaten uygun: {msg}"
 
-        shutil.copy2(FAILLOCK_CONF, BACKUP_FILE)
-
+        # unlock_time satırını güncelle veya ekle
         lines, found = [], False
         with open(FAILLOCK_CONF, "r") as f:
             for line in f:
-                if line.strip().startswith("unlock_time"):
-                    lines.append(f"unlock_time = {expected_seconds}\n")
+                if re.match(r'^\s*unlock_time\s*=', line):
+                    lines.append(f"unlock_time = {expected}\n")
                     found = True
                 else:
                     lines.append(line)
 
         if not found:
-            lines.append(f"\nunlock_time = {expected_seconds}\n")
+            lines.append(f"\nunlock_time = {expected}\n")
 
         with open(FAILLOCK_CONF, "w") as f:
             f.writelines(lines)
 
-        pam_dirs = ["/usr/share/pam-configs", "/etc/pam.d"]
-        for base in pam_dirs:
-            if not os.path.exists(base):
-                continue
-            for root, _, files in os.walk(base):
-                for fname in files:
-                    fpath = os.path.join(root, fname)
-                    try:
-                        with open(fpath, "r") as f:
-                            content = f.read()
-                        if "pam_faillock.so" in content and "unlock_time=" in content:
-                            cleaned = "\n".join(
-                                " ".join(p for p in line.split() if not p.startswith("unlock_time="))
-                                for line in content.splitlines()
-                            )
-                            with open(fpath, "w") as f:
-                                f.write(cleaned)
-                    except Exception:
-                        continue
+        logger.info(f"[CIS 5.3.3.1.2] unlock_time {expected} olarak ayarlandı.")
 
-        return True, f"unlock_time {expected_seconds} saniye (>=900) olarak ayarlandı ve PAM dosyaları temizlendi."
+        # PAM configlerinde unlock_time parametresini temizle
+        for fpath in glob.glob("/usr/share/pam-configs/*"):
+            try:
+                with open(fpath, "r") as f:
+                    data = f.read()
+
+                if "unlock_time=" not in data:
+                    continue
+
+                cleaned = "\n".join(
+                    " ".join(p for p in line.split() if not p.startswith("unlock_time="))
+                    for line in data.splitlines()
+                )
+
+                with open(fpath, "w") as f:
+                    f.write(cleaned)
+
+                logger.info(f"[CIS 5.3.3.1.2] unlock_time kaldırıldı: {fpath}")
+
+            except Exception as e:
+                logger.warning(f"[CIS 5.3.3.1.2] Dosya düzenlenemedi {fpath}: {e}")
+
+        # Son kontrol
+        ok2, msg2 = check_unlock_time({"unlock_time": expected})
+        if ok2:
+            return True, f"Uygulandı: {msg2}"
+        else:
+            return False, f"Uygulandı ama doğrulama başarısız: {msg2}"
 
     except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"[CIS 5.3.3.1.2][APPLY] {msg}")
-        return False, f"Hata: {msg}"
+        logger.error(f"[CIS 5.3.3.1.2][APPLY] Hata: {e}")
+        return False, str(e)
 
 
+DEFAULT_ROOT_UNLOCK = 60  # CIS önerisi: >= 60 saniye
 
-def check_root_account_lock(param):
+
+def _safe_int(v, default):
+    try:
+        return int(v)
+    except Exception:
+        return default
+
+
+def check_root_account_lock(param=None):
     """
-    CIS 5.3.3.1.3 - Ensure password failed attempts lockout includes root account
-    Parametre:
-        param: {
-            "root_unlock_time": int (saniye cinsinden, min 60)
-        }
+    CIS 5.3.3.1.3 - Root hesabı da kilitlemeye dahil edilmeli
+    - even_deny_root mevcut olmalı
+    - root_unlock_time yoksa tamam, varsa >=60 olmalı
+    - PAM içinde root_unlock_time= parametresi kullanılmamalı
     """
+    try:
+        min_time = int((param or {}).get("root_unlock_time", 60))
+        if min_time < 60:
+            min_time = 60
 
-    required_unlock_time = int(param.get("root_unlock_time", 60))
+        if not os.path.exists(FAILLOCK_CONF):
+            return False, f"{FAILLOCK_CONF} bulunamadı."
 
-    if not os.path.exists(FAILLOCK_CONF):
-        return False, f"{FAILLOCK_CONF} bulunamadı."
+        text = open(FAILLOCK_CONF, "r").read()
 
-    with open(FAILLOCK_CONF, "r") as f:
-        lines = f.readlines()
+        if not re.search(r"^\s*even_deny_root\b", text, re.MULTILINE):
+            return False, "even_deny_root satırı eksik."
 
-    has_even_deny_root = any("even_deny_root" in line.strip() and not line.strip().startswith("#") for line in lines)
+        m = re.search(r"^\s*root_unlock_time\s*=\s*(\d+)", text, re.MULTILINE)
+        if m:
+            val = int(m.group(1))
+            if val == 0:
+                return False, "root_unlock_time=0 olamaz (DoS riski)"
+            if val < 60:
+                return False, f"root_unlock_time={val}, 60 veya daha büyük olmalı."
 
-    unlock_time_value = None
-    for line in lines:
-        if line.strip().startswith("root_unlock_time"):
-            try:
-                unlock_time_value = int(line.split("=")[1].strip())
-            except Exception:
-                return False, "root_unlock_time satırı hatalı biçimde yazılmış."
-    if unlock_time_value == 0:
-        return False, "root_unlock_time = 0 olmamalıdır (DoS riski)."
+        bad = run_command([
+            "grep", "-Pi",
+            r"^\s*auth\s+.*pam_faillock\.so.*root_unlock_time",
+            "/etc/pam.d/common-auth"
+        ])
+        if bad[0] and bad[1].strip():
+            return False, "PAM içinde root_unlock_time argümanı kullanılmamalı."
 
-    if not has_even_deny_root:
-        return False, "even_deny_root ayarı eksik."
+        return True, "Root faillock ayarları CIS 5.3.3.1.3 ile uyumlu."
 
-    if unlock_time_value is None or unlock_time_value < required_unlock_time:
-        return False, f"root_unlock_time {required_unlock_time} saniyeden küçük veya tanımsız."
-
-    return True, f"Root hesap kilitleme ayarları uygun. (root_unlock_time={unlock_time_value}, even_deny_root etkin)"
+    except Exception as e:
+        return False, f"Kontrol hatası: {e}"
 
 
 def apply_root_account_lock(username=None, param=None):
     """
-    CIS 5.3.3.1.3 için uygulatma fonksiyonu.
+    CIS 5.3.3.1.3 - Root için lockout ayarlarını uygula
+    - even_deny_root ekle
+    - root_unlock_time yoksa eklenmez, varsa min 60 yapılır
+    - PAM içindeki root_unlock_time argümanlarını temizler
+    - pam-auth-update kullanılmaz
     """
     try:
-        status, message = check_root_account_lock(param)
-        if status:
-            return True, f"Değişiklik gerekmedi: {message}"
+        param = param or {}
+        required_time = int(param.get("root_unlock_time", 60))
+        if required_time < 60:
+            required_time = 60
 
-        required_unlock_time = int(param.get("root_unlock_time", 60))
+        ok, msg = check_root_account_lock({"root_unlock_time": required_time})
+        if ok:
+            return True, f"Gerek yok, zaten uygun: {msg}"
 
-        backup_path = FAILLOCK_CONF + ".bak"
-        shutil.copy2(FAILLOCK_CONF, backup_path)
+        shutil.copy2(FAILLOCK_CONF, FAILLOCK_CONF + ".bak")
 
-        new_lines = []
-        updated_even_deny_root = False
-        updated_unlock_time = False
+        lines = []
+        has_even = False
+        found_root_time = False
 
         with open(FAILLOCK_CONF, "r") as f:
             for line in f:
-                if line.strip().startswith("even_deny_root"):
-                    new_lines.append("even_deny_root\n")
-                    updated_even_deny_root = True
-                elif line.strip().startswith("root_unlock_time"):
-                    new_lines.append(f"root_unlock_time = {required_unlock_time}\n")
-                    updated_unlock_time = True
+                if re.match(r"^\s*even_deny_root\b", line):
+                    has_even = True
+                    lines.append("even_deny_root\n")
+                elif re.match(r"^\s*root_unlock_time\s*=", line):
+                    found_root_time = True
+                    lines.append(f"root_unlock_time = {required_time}\n")
                 else:
-                    new_lines.append(line)
+                    lines.append(line)
 
-        if not updated_even_deny_root:
-            new_lines.append("even_deny_root\n")
-        if not updated_unlock_time:
-            new_lines.append(f"root_unlock_time = {required_unlock_time}\n")
+        if not has_even:
+            lines.append("\neven_deny_root\n")
+
+        if found_root_time:  # sadece varsa min 60 yap, yoksa ekleme
+            pass
 
         with open(FAILLOCK_CONF, "w") as f:
-            f.writelines(new_lines)
+            f.writelines(lines)
 
-        # PAM configte varsa hatalı root_unlock_time satırlarını kaldır
-        pam_files = subprocess.getoutput("grep -Pl -- '\\bpam_faillock\\.so\\h+([^#\\n\\r]+\\h+)?root_unlock_time' /usr/share/pam-configs/*")
-        if pam_files:
-            for file in pam_files.splitlines():
-                with open(file, "r") as f:
-                    lines = f.readlines()
-                new_lines = [line for line in lines if "root_unlock_time" not in line]
-                with open(file, "w") as f:
-                    f.writelines(new_lines)
+        # 2) PAM içinden root_unlock_time temizle (varsa)
+        ok2, files = run_command(
+            ["grep", "-Pl", r"pam_faillock\.so.*root_unlock_time", "/usr/share/pam-configs"]
+        )
+        if ok2 and files.strip():
+            for fpath in files.splitlines():
+                txt = open(fpath).read().splitlines()
+                cleaned = [" ".join(p for p in ln.split() if not p.startswith("root_unlock_time=")) for ln in txt]
+                open(fpath, "w").write("\n".join(cleaned) + "\n")
 
-            success, output = run_command(["pam-auth-update"])
-            if not success:
-                return False, f"pam-auth-update çalıştırılamadı: {output}"
-
-        return True, f"{FAILLOCK_CONF} güncellendi. Root başarısız giriş kilitleme etkin (root_unlock_time={required_unlock_time})."
+        return True, "CIS 5.3.3.1.3 root lockout ayarları başarıyla uygulandı."
 
     except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"[CIS 5.3.3.1.3][APPLY] {msg}")  
-        return False, f"Hata: {msg}"
+        logger.error(f"[CIS 5.3.3.1.3][APPLY] {e}")
+        return False, str(e)
 
 
 
@@ -831,42 +872,28 @@ PAM_CONFIG_DIR = "/usr/share/pam-configs/"
 
 def check_pwquality_difok(difok_min=2):
     """
-    Gereksinimler:
-      - difok >= 2 pwquality.conf veya pwquality.conf.d altında tanımlı olmalı
-      - /etc/pam.d/common-password içinde difok <=1 olmamalı
+    CIS 5.3.3.2.1 - Ensure password number of changed characters is configured
     """
     try:
-        config_files = [PWQUALITY_CONF]
-        if os.path.isdir(PWQUALITY_CONF_DIR):
-            config_files.extend(
-                os.path.join(PWQUALITY_CONF_DIR, f)
-                for f in os.listdir(PWQUALITY_CONF_DIR)
-                if f.endswith(".conf")
-            )
+        cmd_check = [
+            "bash", "-c",
+            "grep -Psi -- '^\\s*difok\\s*=\\s*([2-9]|[1-9][0-9]+)\\b' "
+            "/etc/security/pwquality.conf /etc/security/pwquality.conf.d/*.conf"
+        ]
+        success, output = run_command(cmd_check)
 
-        success, output = run_command(["grep", "-Psi", r"^\s*difok\s*=\s*\d+", *config_files])
-        valid = False
-        if success and output:
-            for line in output.splitlines():
-                try:
-                    value = int(line.strip().split("=")[-1])
-                    if value >= difok_min:
-                        valid = True
-                        break
-                except Exception:
-                    continue
+        if not success or not output.strip():
+            return False, "difok >= 2 ayarı bulunamadı."
 
-        if not valid:
-            return False, "pwquality.conf veya .d dizininde uygun difok değeri bulunamadı."
-
-        pam_result = subprocess.run([
-            "grep", "-Psi",
-            r"^\s*password.*pam_pwquality\.so.*difok\s*=\s*([0-1])\b",
+        cmd_pam = [
+            "bash", "-c",
+            "grep -Psi -- '^\\s*password\\s+(requisite|required|sufficient)\\s+pam_pwquality\\.so.*difok\\s*=\\s*([0-1])\\b' "
             "/etc/pam.d/common-password"
-        ], stdout=subprocess.PIPE, text=True)
+        ]
+        success, output = run_command(cmd_pam)
 
-        if pam_result.stdout.strip():
-            return False, f"common-password içinde uygunsuz difok bulundu:\n{pam_result.stdout}"
+        if success and output.strip():
+            return False, f"PAM içinde uygunsuz difok değeri tespit edildi:\n{output}"
 
         return True, "difok yapılandırması CIS gereksinimine uygun."
 
@@ -877,7 +904,7 @@ def check_pwquality_difok(difok_min=2):
 
 def apply_pwquality_difok(username=None, param=None):
     """
-    CIS 5.3.3.2.1 - Ensure password number of changed characters is configured
+    CIS 5.3.3.2.1 - Uygulama: difok >= 2 olacak şekilde ayarlanır
     """
     try:
         difok = 2
@@ -886,26 +913,30 @@ def apply_pwquality_difok(username=None, param=None):
         elif param is not None:
             difok = int(param)
 
-        if check_pwquality_difok(difok):
-            return True, f"difok zaten {difok} veya üstünde."
+        is_ok, _ = check_pwquality_difok(difok)
+        if is_ok:
+            return True, f"difok zaten {difok} veya daha büyük olarak ayarlı."
 
         run_command(["sed", "-ri", r"s/^\s*difok\s*=/# &/", PWQUALITY_CONF])
         run_command(["mkdir", "-p", PWQUALITY_CONF_DIR])
+
         cmd_write = ["bash", "-c", f"printf '\\ndifok = {difok}\\n' > {PWQUALITY_CONF_FILE}"]
         success, output = run_command(cmd_write)
 
         if not success:
-            return False, f"Difok değeri yazılamadı: {output}"
+            return False, f"difok yazılamadı: {output}"
 
-        # PAM configlerden difok temizle
-        cmd_find_pam = ["grep", "-Pl", r"\bpam_pwquality\.so\b.*difok\b", f"{PAM_CONFIG_DIR}*"]
-        success, output = run_command(cmd_find_pam)
-        if success and output:
-            for file in output.splitlines():
+        cmd_clean = [
+            "bash", "-c",
+            f"grep -Pl '\\bpam_pwquality\\.so\\b.*difok' {PAM_CONFIG_DIR}* 2>/dev/null"
+        ]
+        success, files = run_command(cmd_clean)
+
+        if success and files.strip():
+            for file in files.splitlines():
                 run_command(["sed", "-ri", r"s/\bdifok\s*=\s*\d+\b//g", file])
-                logger.info(f"[apply_pwquality_difok] {file} içindeki difok parametresi temizlendi.")
 
-        return True, f"Difok {difok} olarak ayarlandı."
+        return True, f"difok {difok} olarak ayarlandı ve PAM içindeki eski değerler temizlendi."
 
     except Exception as e:
         msg = f"Hata: {str(e)}" 
@@ -932,22 +963,21 @@ def check_min_password_length(param=None):
         logger.info(f"[check_min_password_length] minlen >= {minlen} kontrol ediliyor...")
 
         success, output = run_command([
-            "grep", "-Psi",
-            rf"^\h*minlen\h*=\h*(1[4-9]|[2-9][0-9]+)\b",
-            PWQUALITY_CONF,
-            os.path.join(PWQUALITY_CONF_DIR, "*.conf")
+            "bash", "-c",
+            f"grep -Psi '^\\s*minlen\\s*=\\s*(1[4-9]|[2-9][0-9]|[1-9][0-9]{{2,}})\\b' "
+            f"{PWQUALITY_CONF} {PWQUALITY_CONF_DIR}*.conf"
         ])
-        if not (success and output):
-            return False, f"pwquality.conf veya .d dizininde minlen {minlen} altında."
+        if not (success and output.strip()):
+            return False, f"pwquality.conf veya .d dizininde minlen {minlen} altında veya tanımsız."
 
-        pam_check = subprocess.run([
+        # PAM içinde minlen 0-13 aranmamalı (bulunursa hatalı)
+        success, pam_output = run_command([
             "grep", "-Psi",
             r"^\s*password.*pam_pwquality\.so.*minlen\s*=\s*([0-9]|1[0-3])\b",
             "/etc/pam.d/common-password"
-        ], stdout=subprocess.PIPE, text=True)
-
-        if pam_check.stdout.strip():
-            return False, f"common-password içinde düşük minlen değeri bulundu:\n{pam_check.stdout}"
+        ])
+        if success and pam_output.strip():
+            return False, f"common-password içinde düşük minlen değeri bulundu:\n{pam_output}"
 
         return True, f"minlen >= {minlen} doğru yapılandırılmış."
 
@@ -968,29 +998,31 @@ def apply_min_password_length(username=None, param=None):
         if ok:
             return True, f"Zaten uygun: {msg}"
 
-        run_command(["sed", "-ri", r"/^\s*minlen\s*=/d", PWQUALITY_CONF])
+        run_command(["sed", "-ri", r"s/^\s*minlen\s*=/# &/", PWQUALITY_CONF])
 
-        os.makedirs(PWQUALITY_CONF_DIR, exist_ok=True)
-
-        with open(PWQUALITY_FILE, "w") as f:
-            f.write(f"minlen = {minlen}\n")
+        run_command(["mkdir", "-p", PWQUALITY_CONF_DIR])
 
         success, output = run_command([
-            "grep", "-Pl",
-            r"\bpam_pwquality\.so\h+([^#\n\r]+\h+)?minlen\b",
-            "/usr/share/pam-configs/*"
+            "bash", "-c", f"printf '\\nminlen = {minlen}\\n' > {PWQUALITY_FILE}"
         ])
-        if success and output:
-            for file in output.splitlines():
+        if not success:
+            return False, f"Minlen değeri yazılamadı: {output}"
+
+        success, files = run_command([
+            "bash", "-c",
+            "grep -Pl '\\bpam_pwquality\\.so\\s+([^#\\n\\r]+\\s+)?minlen\\b' /usr/share/pam-configs/* 2>/dev/null"
+        ])
+        if success and files.strip():
+            for file in files.splitlines():
                 run_command(["sed", "-ri", r"s/\bminlen\s*=\s*\d+\b//g", file])
-                logger.info(f"[apply_min_password_length] PAM modülünden minlen temizlendi: {file}")
+                logger.info(f"[apply_min_password_length] PAM minlen temizlendi: {file}")
 
         return True, f"minlen {minlen} olarak ayarlandı ve eski tanımlar temizlendi."
 
     except Exception as e:
         msg = f"Hata: {str(e)}"
-        logger.error(f"[CIS 5.3.3.2.2 ][APPLY] {msg}")
-        return False, f"Hata: {msg}"
+        logger.error(f"[CIS 5.3.3.2.2][APPLY] {msg}")
+        return False, msg
 
 
 
@@ -1212,14 +1244,14 @@ def check_maxsequence(expected_value=3):
                     break
 
         # PAM içinde hatalı tanım var mı kontrol et
-        pam_check = subprocess.run([
+        success, pam_output = run_command([
             "grep", "-Psi",
             r"^\s*password.*pam_pwquality\.so.*maxsequence\s*=\s*(0|[4-9]|[1-9][0-9]+)\b",
             COMMON_PASSWORD
-        ], stdout=subprocess.PIPE, text=True)
+        ])
 
-        if pam_check.stdout.strip():
-            return False, f"common-password içinde hatalı maxsequence parametresi bulundu:\n{pam_check.stdout}"
+        if success and pam_output.strip():
+            return False, f"common-password içinde hatalı maxsequence parametresi bulundu:\n{pam_output}"
 
         # Değeri değerlendir
         if found_value is None:
@@ -1387,76 +1419,83 @@ ENFORCING_CONF = os.path.join(PWQUALITY_DIR, "50-enforcing.conf")
 def check_enforcing(expected_value=1):
     """
     CIS 5.3.3.2.7 - Ensure password quality checking is enforced
-    enforcing=0 bulunmamalı, enforcing=1 tanımlı olmalı.
+    enforcing=0 olmamalı ve enforcing=1 aktif olmalı
     """
-    try:
-        config_files = [PWQUALITY_CONF] + glob.glob(f"{PWQUALITY_DIR}/*.conf")
-        for file in config_files:
-            if os.path.exists(file):
-                with open(file, "r") as f:
-                    for line in f:
-                        if re.match(r"^\s*enforcing\s*=\s*0\b", line):
-                            return False, f"{file} içinde enforcing=0 bulundu!"
 
-        if os.path.exists(COMMON_PASSWORD):
-            with open(COMMON_PASSWORD, "r") as f:
-                for line in f:
-                    if re.search(r"pam_pwquality\.so.*enforcing=0", line):
-                        return False, f"{COMMON_PASSWORD} içinde enforcing=0 bulundu!"
+    # 1) pwquality config'lerde enforcing=0 var mı?
+    cmd1 = [
+        "grep", "-PHsi", r"^\h*enforcing\h*=\h*0\b",
+        PWQUALITY_CONF, f"{PWQUALITY_DIR}/*.conf"
+    ]
+    ok1, out1 = run_command(cmd1)
+    if ok1 and out1.strip():
+        return False, f"enforcing=0 bulundu:\n{out1}"
 
-        if os.path.isfile(ENFORCING_CONF):
-            with open(ENFORCING_CONF, "r") as f:
-                content = f.read()
-            match = re.search(r"^\s*enforcing\s*=\s*(\d+)", content, re.MULTILINE)
-            if match and int(match.group(1)) == expected_value:
-                return True, f"enforcing = {expected_value} aktif ({ENFORCING_CONF})"
-            else:
-                return False, f"{ENFORCING_CONF} içinde enforcing değeri hatalı."
+    # 2) PAM common-password içinde override enforcing=0 var mı?
+    cmd2 = [
+        "grep", "-PHsi",
+        r"^\h*password\h+[^#\n\r]+\h+pam_pwquality\.so\h+([^#\n\r]+\h+)?enforcing=0\b",
+        COMMON_PASSWORD
+    ]
+    ok2, out2 = run_command(cmd2)
+    if ok2 and out2.strip():
+        return False, f"PAM override enforcing=0 bulundu:\n{out2}"
 
-        return False, "enforcing=1 tanımı bulunamadı."
+    # 3) enforcing=1 ayarı 50-enforcing.conf içinde tanımlı mı?
+    if os.path.isfile(ENFORCING_CONF):
+        with open(ENFORCING_CONF, "r") as f:
+            content = f.read()
+        m = re.search(r"^\s*enforcing\s*=\s*(\d+)", content, re.MULTILINE)
+        if m and int(m.group(1)) == expected_value:
+            return True, f"enforcing={expected_value} aktif ({ENFORCING_CONF})"
 
-    except Exception as e:
-        return False, f"Hata: {e}"
+    return False, "enforcing=1 tanımı bulunamadı."
 
 
 def apply_enforcing(username=None, param=None):
     """
-    CIS 5.3.3.2.7 - Ensure password quality checking is enforced
+    CIS 5.3.3.2.7 - enforcing=1 olacak ve hiçbir yerde =0 olmayacak
     """
-    try:
-        expected_value = int(param.get("value", 1)) if param else 1
+    expected_value = int(param.get("value", 1)) if param else 1
 
-        ok, msg = check_enforcing(expected_value)
-        if ok:
-            return True, f"Zaten uyumlu: {msg}"
+    ok, msg = check_enforcing(expected_value)
+    if ok:
+        return True, f"Zaten uyumlu: {msg}"
 
-        logger.info(f"[apply_enforcing] Uyumsuz: {msg} → Düzeltiliyor...")
+    logger.info(f"[apply_enforcing] Uyum dışı: {msg} → düzeltiliyor...")
 
-        for file in [PWQUALITY_CONF] + glob.glob(f"{PWQUALITY_DIR}/*.conf"):
-            if os.path.exists(file):
-                run_command(["sed", "-ri", r"s/^\s*enforcing\s*=\s*0\b/# &/", file])
+    # 1) PAM config override içinde enforcing=0 geçenleri bul ve temizle
+    cmd3 = [
+        "grep", "-Pl",
+        r"\bpam_pwquality\.so\h+([^#\n\r]+\h+)?enforcing=0\b",
+        f"{PAM_CONFIG_DIR}/*"
+    ]
+    ok3, out3 = run_command(cmd3)
+    if ok3 and out3.strip():
+        for conf in out3.splitlines():
+            run_command(["sed", "-ri", r"s/\benforcing\s*=\s*0\b//g", conf])
+            logger.info(f"[apply_enforcing] PAM override temizlendi: {conf}")
 
-        if os.path.exists(COMMON_PASSWORD):
-            run_command(["sed", "-ri", r"s/\benforcing\s*=\s*0\b//g", COMMON_PASSWORD])
+    # 2) pwquality.conf ve .d/*.conf içinde enforcing=0 olanları yorum satırı yap
+    cmd4 = [
+        "sed", "-ri",
+        r"s/^\s*enforcing\s*=\s*0/# &/",
+        PWQUALITY_CONF, f"{PWQUALITY_DIR}/*.conf"
+    ]
+    run_command(cmd4)
+    logger.info("[apply_enforcing] pwquality enforcing=0 satırları yorumlandı")
 
-        success, output = run_command(["grep", "-Pl", r"pam_pwquality\.so.*enforcing", f"{PAM_CONFIG_DIR}/*"])
-        if success and output:
-            for path in output.splitlines():
-                run_command(["sed", "-ri", r"s/\benforcing\s*=\s*\d+\b//g", path])
+    # 3) enforcing=1 tanımını 50-enforcing.conf içine yaz
+    os.makedirs(PWQUALITY_DIR, exist_ok=True)
+    with open(ENFORCING_CONF, "w") as f:
+        f.write(f"enforcing = {expected_value}\n")
 
-        os.makedirs(PWQUALITY_DIR, exist_ok=True)
-        with open(ENFORCING_CONF, "w") as f:
-            f.write(f"enforcing = {expected_value}\n")
+    logger.info(f"[apply_enforcing] enforcing={expected_value} yazıldı: {ENFORCING_CONF}")
 
-        logger.info(f"[apply_enforcing] enforcing={expected_value} olarak ayarlandı ({ENFORCING_CONF})")
+    # 4) Son doğrulama
+    final_ok, final_msg = check_enforcing(expected_value)
+    return final_ok, final_msg
 
-        final_ok, final_msg = check_enforcing(expected_value)
-        return final_ok, final_msg
-
-    except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"[CIS 5.3.3.2.7][APPLY] {msg}")
-        return False, msg
 
 PWQUALITY_FILE = os.path.join(PWQUALITY_DIR, "50-pwroot.conf")
 
@@ -1472,7 +1511,7 @@ def check_enforce_for_root():
             if os.path.exists(file):
                 with open(file, "r") as f:
                     for line in f:
-                        if re.match(r"^\s*enforce_for_root\b", line):
+                        if re.match(r"^[ \t]*enforce_for_root\b", line):
                             found = True
                             break
         if found:
@@ -1659,11 +1698,8 @@ def check_password_history_use_authtok():
     /etc/pam.d/common-password dosyasında pam_pwhistory.so satırında use_authtok parametresini kontrol eder.
     """
 
-    grep_cmd = [
-        "grep", "-Psi",
-        r'^\s*password\s+.*pam_pwhistory\.so.*use_authtok\b',
-        COMMON_PASSWORD
-    ]
+    grep_cmd = ["grep", "-Psi", r"pam_pwhistory\.so.*use_authtok\b", COMMON_PASSWORD]
+
     success, output = run_command(grep_cmd)
 
     if success and output.strip():
