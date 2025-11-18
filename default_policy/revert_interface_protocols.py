@@ -78,7 +78,7 @@ def revert_interface_protocols():
             if not success:
                 logger.error(f"[DEFAULT] '{ipv6_config_file}' kaldırılırken hata: {output}")
             else:
-                # Dosya silindiği için sysctl'i yeniden yüklememiz gerekecek
+                # Dosya silindiği için sysctl'i yeniden yüklenmesi gerekecek
                 sysctl_changes_made = True
                 logger.info(f"[DEFAULT] IPv6 politika dosyası '{ipv6_config_file}' başarıyla kaldırıldı.")
         else:

@@ -94,10 +94,10 @@ def find_ssh_private_host_keys():
     key_files = []
     for f in glob.glob("/etc/ssh/**/*", recursive=True):
         try:
-            # ssh-keygen ile gerçekten private key mi kontrol et
+            # ssh-keygen ile gerçekten private key mi kontrol eder
             ok, _ = run_command(["ssh-keygen", "-lf", f])
             if ok:
-                # dosya tipini kontrol et
+                # dosya tipini kontrol eder
                 ok2, file_out = run_command(["file", f])
                 if ok2 and "private key" in file_out.lower():
                     key_files.append(f)
@@ -115,7 +115,6 @@ def check_ssh_private_host_key_permissions():
     correct = []
     key_files = find_ssh_private_host_keys()
 
-    # ssh_keys veya _ssh grubunu bul
     ssh_group = None
     with open("/etc/group") as f:
         for line in f:
@@ -307,7 +306,7 @@ def check_sshd_access():
         )
 
         if not matches:
-            # config dosyalarında var mı?
+            # config dosyaları kontrolü
             for path in get_all_sshd_config_files():
                 with open(path, "r") as f:
                     text = f.read()
@@ -383,7 +382,7 @@ def check_sshd_banner():
         if not success:
             return False, f"sshd -T çalıştırılamadı: {output}"
 
-        # Banner parametresini bul
+        # Banner parametresini bulur
         banner_line = [line for line in output.splitlines() if line.strip().lower().startswith("banner ")]
         if not banner_line:
             return False, "Banner ayarı bulunamadı."
@@ -398,7 +397,7 @@ def check_sshd_banner():
         if not content:
             return False, "Banner dosyası boş."
 
-        # Uygunsuz karakter dizilerini kontrol et
+        # Uygunsuz karakter dizilerini kontrol eder
         forbidden_tokens = ["\\m", "\\r", "\\s", "\\v"]
         for token in forbidden_tokens:
             if token in content:
@@ -444,7 +443,7 @@ def apply_sshd_banner(username=None, param=None):
         if not sshd_files:
             return False, "SSH yapılandırma dosyası bulunamadı."
 
-        main_file = sshd_files[0]  # genelde /etc/ssh/sshd_config
+        main_file = sshd_files[0]  # /etc/ssh/sshd_config
 
         # Banner satırını düzenle (ilk Include/Match'ten önce olacak şekilde)
         with open(main_file, "r", encoding="utf-8") as f:
@@ -515,7 +514,7 @@ def check_sshd_ciphers(username=None, param=None):
             return False, f"sshd -T çalıştırılamadı: {output}"
 
         current_ciphers = None
-        for line in output.splitlines():   # <-- sadece splitlines(), decode yok
+        for line in output.splitlines():
             if line.strip().startswith("ciphers"):
                 current_ciphers = line.split(None, 1)[1].strip()
                 break
@@ -568,7 +567,7 @@ def apply_sshd_ciphers(username=None, param=None):
                 else:
                     updated_lines.append(line)
 
-            # Eğer hiçbir yerde yoksa en sona ekle
+            # Eğer hiçbir yerde yoksa en sona ekler
             if not ciphers_set:
                 updated_lines.append(f"\n# SSH Ciphers configuration per CIS 5.1.6\n")
                 updated_lines.append(f"Ciphers {new_ciphers}\n")
@@ -584,17 +583,15 @@ def apply_sshd_ciphers(username=None, param=None):
         # Config syntax kontrolü
         success, output = run_command(["sshd", "-t"])
         if not success:
-            # Hatalıysa geri al
+            # Hatalıysa geri alır
             for conf_file in config_files:
                 shutil.copy2(f"{conf_file}.bak", conf_file)
             return False, f"Config test hatası: {output}"
 
-        # Servisi yeniden başlat
         success, output = run_command(["systemctl", "restart", "sshd"])
         if not success:
             return False, f"sshd restart başarısız: {output}"
 
-        # Doğrulama
         ok, msg = check_sshd_ciphers(param={"ciphers": new_ciphers})
         if ok:
             return True, f"Ciphers başarıyla güncellendi: {msg}"
@@ -815,7 +812,7 @@ def apply_sshd_disableforwarding(username=None, param=None):
         if not found:
             lines.insert(insert_index, "DisableForwarding yes\n")
 
-        # Değişiklikleri kaydet
+        # Değişiklikleri kaydeder
         with open(SSHD_CONFIG, "w", encoding="utf-8") as f:
             f.writelines(lines)
 
@@ -913,7 +910,7 @@ def apply_sshd_gssapiauthentication(username=None, param=None):
             inserted = False
 
             for line in lines:
-                # Var olan satırı değiştir
+                # Var olan satırı değiştirir
                 if line.strip().lower().startswith("gssapiauthentication"):
                     new_lines.append("GSSAPIAuthentication no\n")
                     found = True
@@ -926,7 +923,7 @@ def apply_sshd_gssapiauthentication(username=None, param=None):
 
                 new_lines.append(line)
 
-            # Hiç bulunmadı ve eklenmediyse en sona ekle
+            # Hiç bulunmadı ve eklenmediyse en sona ekler
             if not found and not inserted:
                 new_lines.append("GSSAPIAuthentication no\n")
 
@@ -938,7 +935,6 @@ def apply_sshd_gssapiauthentication(username=None, param=None):
         if not updated:
             return False, "Herhangi bir yapılandırma dosyası düzenlenemedi."
 
-        # Değişiklik sonrası yapılandırmayı test et
         ok, test_output = run_command(["sshd", "-t"])
         if not ok:
             return False, f"Config test başarısız: {test_output}"
@@ -979,7 +975,6 @@ def check_sshd_hostbasedauthentication(test_user: str = None):
     if value_global != "no":
         return False, f"HostbasedAuthentication yanlış: {value_global or 'bulunamadı'}"
 
-    # Eğer Match blokları varsa, -C user ile tekrar test et
     if test_user:
         ok_c, out_c = run_command(["sshd", "-T", "-C", f"user={test_user}"])
         if ok_c:
@@ -1073,7 +1068,6 @@ def check_sshd_ignorerhosts(test_user: str = None):
     if value_global != "yes":
         return False, f"IgnoreRhosts yanlış: {value_global or 'bulunamadı'}"
 
-    # Match bloğu kontrolü (opsiyonel)
     if test_user:
         ok_c, out_c = run_command(["sshd", "-T", "-C", f"user={test_user}"])
         if ok_c:
@@ -1099,7 +1093,7 @@ def apply_sshd_ignorerhosts(username=None, param=None):
 
         main_cfg = all_files[0]
 
-        # Önce gerçekten aktif satır var mı kontrol et
+        # Önce gerçekten aktif satır var mı kontrol eder
         grep_cmd = ["grep", "-iR", "^[[:space:]]*IgnoreRhosts", "/etc/ssh/sshd_config", "/etc/ssh/sshd_config.d/"]
         grep_ok, grep_out = run_command(grep_cmd)
         has_active = any(
@@ -1108,7 +1102,6 @@ def apply_sshd_ignorerhosts(username=None, param=None):
             if not line.strip().startswith("#")
         )
 
-        # Eğer aktif satır yoksa müdahale et
         if not has_active:
             with open(main_cfg, "r", encoding="utf-8") as f:
                 lines = f.readlines()
@@ -1127,13 +1120,10 @@ def apply_sshd_ignorerhosts(username=None, param=None):
             existing_index = next((i for i, l in enumerate(lines) if pattern.match(l)), None)
 
             if existing_index is None:
-                # Hiç yoksa ekle
                 lines.insert(insert_index, "IgnoreRhosts yes\n")
             else:
-                # Varsa yorum satırını temizle ve yes yap
                 lines[existing_index] = "IgnoreRhosts yes\n"
 
-            # Yedekle
             run_command(["cp", main_cfg, f"{main_cfg}.bak"])
 
             with open(main_cfg, "w", encoding="utf-8") as f:
@@ -1146,7 +1136,6 @@ def apply_sshd_ignorerhosts(username=None, param=None):
 
             run_command(["systemctl", "reload", "sshd"])
 
-        # Son doğrulama
         ok_final, msg_final = check_sshd_ignorerhosts()
         if ok_final:
             return True, "IgnoreRhosts başarıyla 'yes' olarak ayarlandı veya zaten aktifti."
@@ -1227,12 +1216,10 @@ def apply_sshd_kexalgorithms(username=None, param=None):
         with open(SSHD_CONFIG, "w") as f:
             f.writelines(new_lines)
 
-        # Config test
         ok, out = run_command(["sshd", "-t"])
         if not ok:
             return False, f"sshd config test başarısız: {out}"
 
-        # Son doğrulama
         return check_sshd_kexalgorithms()
 
     except Exception as e:
@@ -1251,7 +1238,6 @@ def check_sshd_logingracetime():
     valid = True
     messages = []
 
-    # Dosya bazlı kontrol
     for conf_file in all_files:
         try:
             with open(conf_file) as f:
@@ -1272,12 +1258,11 @@ def check_sshd_logingracetime():
                         else:
                             valid = False
                             messages.append(f"{conf_file}: Eksik değer ({line.strip()})")
-                        break  # İlk occurrence geçerlidir
+                        break
         except Exception as e:
             valid = False
             messages.append(f"{conf_file} okunamadı: {str(e)}")
 
-    # Runtime (sshd -T) doğrulaması
     ok, output = run_command(["sshd", "-T"])
     if not ok:
         valid = False
@@ -1316,10 +1301,8 @@ def apply_sshd_logingracetime(username=None, param=None):
         with open(SSHD_CONFIG, "r") as f:
             lines = f.readlines()
 
-        # Eski LoginGraceTime satırlarını kaldır
         new_lines = [line for line in lines if not re.match(r"^\s*LoginGraceTime", line, re.IGNORECASE)]
 
-        # CIS'e göre Include veya Match öncesine eklenmeli
         inserted = False
         for i, line in enumerate(new_lines):
             if re.match(r"^\s*(Include|Match)", line, re.IGNORECASE):
@@ -1421,19 +1404,15 @@ def apply_sshd_loglevel(username=None, param=None):
         backup_file = f"{main_cfg}.bak"
         shutil.copy2(main_cfg, backup_file)
 
-        # Dosya oku
         with open(main_cfg, "r", encoding="utf-8") as f:
             lines = f.readlines()
 
-        # Yorumlu veya yorum olmayan tüm LogLevel satırlarını bul
         pattern = re.compile(r'^\s*#?\s*LogLevel\b', re.IGNORECASE)
         found_index = next((i for i, l in enumerate(lines) if pattern.match(l)), None)
 
         if found_index is not None:
-            # Satırı aktif hale getir ve doğru değeri yaz
             lines[found_index] = f"LogLevel {desired_level}\n"
         else:
-            # İlk Include veya Match'ten önce ekle
             insert_index = 0
             for i, line in enumerate(lines):
                 if re.match(r'^\s*(Include|Match)\b', line, re.IGNORECASE):
@@ -1565,7 +1544,7 @@ def apply_sshd_macs(username=None, param=None):
                 insert_index = i
                 break
 
-        # Mevcut MACs satırı varsa değiştir, yoksa ekle
+        # Mevcut MACs satırı varsa değiştir, yoksa ekler
         pattern = re.compile(r'^\s*#?\s*MACs\b', re.IGNORECASE)
         existing_index = next((i for i, l in enumerate(lines) if pattern.match(l)), None)
 
@@ -1577,13 +1556,11 @@ def apply_sshd_macs(username=None, param=None):
         with open(main_cfg, "w", encoding="utf-8") as f:
             f.writelines(lines)
 
-        # Yapılandırma testi
         ok_test, out_test = run_command(["sshd", "-t"])
         if not ok_test:
             shutil.copy2(backup_file, main_cfg)
             return False, f"sshd -t doğrulaması başarısız: {out_test}"
 
-        # Servisi reload et
         run_command(["systemctl", "reload", "sshd"])
 
         ok_final, msg_final = check_sshd_macs()
@@ -1660,7 +1637,7 @@ def apply_sshd_maxauthtries(username=None, param=None):
         if ok and current == desired:
             return True, f"MaxAuthTries zaten uygun: {current}"
 
-        # Mevcut satırları oku
+        # Mevcut satırları okur
         with open(main_cfg, "r", encoding="utf-8") as f:
             lines = f.readlines()
 
@@ -1686,7 +1663,6 @@ def apply_sshd_maxauthtries(username=None, param=None):
         with open(main_cfg, "w", encoding="utf-8") as f:
             f.writelines(lines)
 
-        # sshd konfigürasyon testi
         ok_test, out_test = run_command(["sshd", "-t"])
         if not ok_test:
             run_command(["cp", backup_path, main_cfg])
@@ -1948,7 +1924,6 @@ def apply_sshd_permitemptypasswords(username=None, param=None):
         main_cfg = all_files[0]
         backup_path = f"{main_cfg}.bak"
 
-        # Yedekleme sadece bir kez yapılır
         if not os.path.exists(backup_path):
             run_command(["cp", main_cfg, backup_path])
 
@@ -2293,7 +2268,7 @@ def check_ssh_key_authentication(expected_enabled=True):
             for line in f:
                 line_stripped = line.strip().lower()
                 if line_stripped.startswith("passwordauthentication"):
-                    # Satırın başında # varsa yorum satırıdır, atlanmalı.
+                    
                     if line_stripped.startswith("#"):
                         continue
                         
@@ -2346,22 +2321,19 @@ def apply_ssh_key_authentication(username=None, param=None):
     setting = "no" if enable else "yes"  # True ise parola kapatılır
 
     try:
-        # 1. Dizini oluştur (Zaten varsa geçer)
+
         os.makedirs(dir_path, exist_ok=True)
         logger.debug(f"[SSH Key Auth][APPLY] Dizin oluşturuldu/kontrol edildi: {dir_path}")
 
-        # 2. Yapılandırma dosyasını yaz
         with open(full_path, "w") as f:
             f.write(f"PasswordAuthentication {setting}\n")
             
         logger.info(f"[SSH Key Auth][APPLY] '{full_path}' dosyasına 'PasswordAuthentication {setting}' yazıldı.")
 
-        # 3. SSHD servisini yeniden yükle (run_command gereklidir)
         logger.info("[SSH Key Auth][APPLY] sshd servisi yeniden yükleniyor...")
         success_reload, output_reload = run_command(["systemctl", "reload", "sshd"])
         
         if not success_reload:
-            # Yeniden yükleme başarısız olursa, yeniden başlatmayı dene
             logger.warning(f"[SSH Key Auth][APPLY] Yeniden yükleme başarısız: {output_reload}. Yeniden başlatma deneniyor...")
             success_reload, output_reload = run_command(["systemctl", "restart", "sshd"])
             
@@ -2484,7 +2456,7 @@ def check_restrict_ssh_to_ips(allowed_ips):
         with open(sshd_conf_path, "r") as f:
             content = f.read()
 
-        # Tüm IP'lerin config dosyasında olup olmadığını kontrol et
+        # Tüm IP'lerin config dosyasında olup olmadığını kontrol eder
         for ip in allowed_ips:
             if f"Match Address {ip}" not in content:
                 return False

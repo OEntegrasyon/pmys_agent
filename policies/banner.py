@@ -4,7 +4,7 @@ from datetime import datetime
 from utils import get_logged_in_user, get_desktop_env, run_command
 import stat
 # ==============================================================================
-# == GİRİŞ BAŞLIKLARI (LOGIN BANNERS) POLİTİKALARI (YENİ İSİMLERLE) ==============
+# == GİRİŞ BAŞLIKLARI (LOGIN BANNERS) POLİTİKALARI ==============
 # ==============================================================================
 
 ### Politika 1: Günün Mesajını Yapılandır (/etc/motd) ###

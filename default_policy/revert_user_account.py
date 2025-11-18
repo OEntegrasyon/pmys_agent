@@ -35,11 +35,10 @@ def revert_password_expiration():
             else:
                 new_lines.append(line)
 
-        # Eğer hiç yoksa en alta ekle
+        # Eğer hiç yoksa en alta ekler
         if not found:
             new_lines.append("\nPASS_MAX_DAYS   99999\n")
 
-        # Yeni dosyayı yaz
         temp_path = login_defs + ".tmp"
         with open(temp_path, "w", encoding="utf-8") as f:
             f.writelines(new_lines)
@@ -47,7 +46,7 @@ def revert_password_expiration():
 
         logger.info("[CIS 5.4.1.1][REVERT] PASS_MAX_DAYS 99999 olarak Debian varsayılanına döndürüldü.")
 
-        # Kullanıcı bazlı chage değerlerini de Debian default’a çek
+        # Kullanıcı bazlı chage değerlerini de Debian default’a çeker
         with open("/etc/passwd", "r") as f:
             for line in f:
                 parts = line.strip().split(":")
@@ -199,17 +198,15 @@ def revert_inactive_password_lock(username=None, param=None):
     try:
         revert_days = str((param or {}).get("revert_days", -1))
 
-        # Yeni kullanıcılar için varsayılan revert
         run_command(["useradd", "-D", "-f", revert_days])
 
-        # Mevcut kullanıcılar için revert
         with open("/etc/shadow", "r") as f:
             for line in f:
                 parts = line.strip().split(":")
                 if len(parts) < 8:
                     continue
                 user, passwd = parts[0], parts[1]
-                if not passwd.startswith("$"):  # sadece şifreli hesaplar
+                if not passwd.startswith("$"):  # sadece şifreli hesaplar için
                     continue
                 run_command(["chage", "--inactive", revert_days, user])
 
@@ -332,10 +329,6 @@ def revert_ensure_shell_timeout(username=None, param=None):
     
     CIS 5.4.3.2 Apply metodu ile /etc/profile.d/timeout.sh dosyasına eklenen
     TMOUT, readonly TMOUT ve export TMOUT satırlarını geri alır.
-
-    Geri yükleme seçenekleri:
-        param["mode"] = "remove"  -> Dosyayı tamamen siler. (default)
-        param["mode"] = "comment" -> Satırları yorum satırı haline getirir.
     """
     try:
         timeout_file = "/etc/profile.d/timeout.sh"
@@ -386,12 +379,10 @@ def revert_umask():
     try:
         config_file = "/etc/profile.d/50-systemwide_umask.sh"
 
-        # 1️⃣ apply ile oluşturulan dosyayı sil
         if os.path.exists(config_file):
             os.remove(config_file)
             logger.info(f"[CIS 5.4.3.3][REVERT] {config_file} silindi.")
 
-        # 2️⃣ /etc/profile ve /etc/login.defs içinde eklenmiş umask satırlarını kaldır
         for path in ["/etc/profile", "/etc/login.defs"]:
             if not os.path.exists(path):
                 continue

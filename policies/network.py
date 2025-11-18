@@ -40,12 +40,12 @@ def check_network_module_disabled(username, parameters):
             print(f"Denetim Başarısız: '{module_name}' modülü o an yüklü.")
             is_compliant = False
 
-        # Kontrol B: Modül kara listeye (blacklist) alınmış mı?
+        # Modül kara listeye (blacklist) alınmış mı?
         if not re.search(r"^\s*blacklist\s+" + re.escape(module_name) + r"\b", modprobe_config_output, re.MULTILINE):
             print(f"Denetim Başarısız: '{module_name}' modülü 'modprobe --showconfig' çıktısında kara listeye alınmamış.")
             is_compliant = False
             
-        # Kontrol C: Modülün yüklenmesi engellenmiş mi (install ... /bin/false)?
+        # Modülün yüklenmesi engellenmiş mi (install ... /bin/false)?
         if not re.search(r"^\s*install\s+(/bin/true|/bin/false)\b", install_check_output, re.MULTILINE):
             print(f"Denetim Başarısız: '{module_name}' modülü 'install /bin/false' (veya /bin/true) kuralına sahip değil.")
             is_compliant = False
@@ -75,11 +75,11 @@ def apply_network_module_disabled(module_name: str) -> tuple[bool, str]:
     )
 
     try:
-        # Kuralı önce geçici bir dosyaya yaz
+        # Kural önce geçici bir dosyaya yazılır
         with open(temp_path, "w") as f:
             f.write(rule_content)
 
-        # sudo ile dosyayı kalıcı yerine taşı
+        # sudo ile dosyayı kalıcı yerine taşınır
         success, output = run_command(['sudo', 'mv', temp_path, rule_path])
         if not success:
             return False, f"Modül kural dosyası ({rule_path}) oluşturulamadı: {output}"
@@ -108,7 +108,7 @@ def disable_wireless_interfaces(username, parameters):
     Bu fonksiyon, sistemin GERÇEK (çalışan ve yapılandırılmış) durumunu
     lsmod ve modprobe komutlarını kullanarak denetler.
     """
-    # Adım 1: Aktif kablosuz modüllerini tespit et
+    # Aktif kablosuz modüllerini tespit et
     wireless_modules = set()
     try:
         find_cmd = "find /sys/class/net/ -type d -name wireless"
@@ -131,7 +131,6 @@ def disable_wireless_interfaces(username, parameters):
     except Exception as e:
         return False, f"Kablosuz modüller tespit edilirken hata: {e}"
 
-    # Adım 2: DENETİM (Audit)
     all_compliant = True 
     
     try:
@@ -367,11 +366,11 @@ def apply_ipv6_disable(parameters):
     )
     
     try:
-        # 1. Ayar dosyasını güvenli bir yere yaz
+        # Ayar dosyasını güvenli bir yere yaz
         with open(temp_path, "w") as f:
             f.write(config_content)
         
-        # 2. Dosyayı kalıcı yerine taşı ve izinlerini ayarla
+        # Dosyayı kalıcı yerine taşı ve izinlerini ayarla
         success_mv, out_mv = run_command(['sudo', 'mv', temp_path, config_file])
         if not success_mv:
             return False, f"IPv6 (disable) yapılandırma dosyası taşınamadı: {out_mv}"
@@ -379,7 +378,7 @@ def apply_ipv6_disable(parameters):
         run_command(['sudo', 'chown', 'root:root', config_file])
         run_command(['sudo', 'chmod', '0644', config_file])
 
-        # 3. Ayarları SİSTEMİ YENİDEN BAŞLATMADAN hemen uygula
+        # Ayarları SİSTEMİ YENİDEN BAŞLATMADAN hemen uygula
         success_all, out_all = run_command(['sudo', 'sysctl', '-w', 'net.ipv6.conf.all.disable_ipv6=1'])
         success_def, out_def = run_command(['sudo', 'sysctl', '-w', 'net.ipv6.conf.default.disable_ipv6=1'])
 
@@ -409,7 +408,6 @@ def configure_sysctl_parameter(username, parameters):
     sysctl_keys = parameters.get("keys") 
     expected_value = parameters.get("value")
 
-    # Parametreleri doğrula
     if not sysctl_keys or not isinstance(sysctl_keys, list) or expected_value is None:
         return False, "Politika hatası: 'keys' (liste olarak) ve 'value' parametreleri zorunludur."
      
@@ -433,7 +431,6 @@ def configure_sysctl_parameter(username, parameters):
                     all_messages.append(f"[{sysctl_key}]: Denetim atlandı (IPv6 devre dışı - Uyumlu/NA).")
                     continue # Bu anahtar başarılı (NA), döngüde sonrakine geç
 
-            # Orijinal kodunuzdaki subprocess çalıştırma
             proc = subprocess.run(
                 ['sysctl', '-n', sysctl_key], 
                 capture_output=True, text=True, check=False
@@ -452,12 +449,10 @@ def configure_sysctl_parameter(username, parameters):
             
             current_value = proc.stdout.strip()
 
-            # Orijinal kodunuzdaki değer karşılaştırması
             if current_value == expected_value:
                 all_messages.append(f"[{sysctl_key}]: Değer zaten '{expected_value}' olarak doğru ayarlanmış.")
                 # all_successful = True (zaten öyle)
             else:
-                # Orijinal kodunuzdaki apply (düzeltme) çağrısı
                 success, message = apply_sysctl_parameter(sysctl_key, expected_value)
                 
                 all_messages.append(f"[{sysctl_key}]: {message}")
@@ -593,7 +588,6 @@ iface {interface} inet static
         
         time.sleep(5) # Sistemin yeni ayarları alması için bekle
 
-        # --- SON KONTROL (run_command ile standartlaştırıldı) ---
         check_success, check_output = run_command(["ip", "-4", "addr", "show", interface])
         
         if check_success and f"inet {expected_ip}/" in check_output:

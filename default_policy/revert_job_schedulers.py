@@ -22,7 +22,7 @@ def revert_cron_service_policy():
     Bu fonksiyon cron (veya crond) servisinin aktifliğini geri alır (stop + disable + mask).
     """
     try:
-        # Cron servis adını tespit et
+        # Cron servis adını tespit etme
         success, output = run_command(["systemctl", "list-unit-files"])
         if not success:
             logger.error(f"[2.4.1.1][REVERT] Servis listesi alınamadı: {output}")
@@ -38,7 +38,7 @@ def revert_cron_service_policy():
             logger.info("[2.4.1.1][REVERT] Cron servisi sistemde kurulu değil, revert gereksiz.")
             return True, "Cron servisi sistemde kurulu değil, revert gerekli değil."
 
-        # Servisi kapat ve disable + mask yap
+        # Servisi kapat ve disable + mask
         run_command(["systemctl", "stop", service_name])
         run_command(["systemctl", "disable", service_name])
         run_command(["systemctl", "mask", service_name])
@@ -50,7 +50,7 @@ def revert_cron_service_policy():
         enabled_status = enabled_status.strip().lower()
         active_status = active_status.strip().lower()
 
-        # Kabul edilebilir varyasyonları hesaba kat
+        # Kabul edilebilir varyasyonlar
         enabled_ok = any(s in enabled_status for s in ["disabled", "masked", "not-found", "no such file"])
         active_ok = any(s in active_status for s in ["inactive", "dead", "failed", "could not be found"])
 
@@ -117,7 +117,6 @@ def revert_cron_hourly_permissions():
       - Permissions: 755
     """
     try:
-        # Önce eski durumu kontrol et
         check_ok, check_msg = check_cron_hourly_permissions()
         if not check_ok:
             logger.info(f"[CIS 2.4.1.3][REVERT] Uyumlu olmadığı tespit edildi: {check_msg}")
@@ -162,7 +161,7 @@ def revert_cron_daily_authorities():
     try:
         logger.info("[CIS 2.4.1.4][REVERT] Geri alma işlemi başlatıldı...")
 
-        # Önce mevcut durumu kaydet
+        # mevcut durumu kaydet
         success, output = run_command(["stat", "-Lc", "%a %u %g", "/etc/cron.daily"])
         if success:
             logger.debug(f"[CIS 2.4.1.4][REVERT] Mevcut stat: {output.strip()}")
@@ -205,18 +204,15 @@ def revert_cron_weekly_permissions():
     try:
         logger.info("[CIS 2.4.1.5][REVERT] Geri alma işlemi başlatıldı...")
 
-        # Mevcut durumu logla
         success, output = run_command(["stat", "-Lc", "%a %u %g", "/etc/cron.weekly/"])
         if success:
             logger.debug(f"[CIS 2.4.1.5][REVERT] Mevcut stat: {output.strip()}")
         else:
             logger.warning(f"[CIS 2.4.1.5][REVERT] stat alınamadı: {output}")
 
-        # Varsayılana geri döndür
         run_command(["chown", "root:root", "/etc/cron.weekly/"])
         run_command(["chmod", "755", "/etc/cron.weekly/"])
 
-        # Kontrol et
         success, output = run_command(["stat", "-Lc", "%a %u %g", "/etc/cron.weekly/"])
         if not success:
             logger.error(f"[CIS 2.4.1.5][REVERT] stat alınamadı: {output}")
@@ -249,18 +245,15 @@ def revert_cron_monthly_permissions():
     try:
         logger.info("[CIS 2.4.1.6][REVERT] Geri alma işlemi başlatıldı...")
 
-        # Mevcut durumu logla
         success, output = run_command(["stat", "-Lc", "%a %u %g", "/etc/cron.monthly/"])
         if success:
             logger.debug(f"[CIS 2.4.1.6][REVERT] Mevcut stat: {output.strip()}")
         else:
             logger.warning(f"[CIS 2.4.1.6][REVERT] stat alınamadı: {output}")
 
-        # Varsayılana geri döndür
         run_command(["chown", "root:root", "/etc/cron.monthly/"])
         run_command(["chmod", "755", "/etc/cron.monthly/"])
 
-        # Kontrol et
         success, output = run_command(["stat", "-Lc", "%a %u %g", "/etc/cron.monthly/"])
         if not success:
             logger.error(f"[CIS 2.4.1.6][REVERT] stat alınamadı: {output}")
@@ -292,18 +285,15 @@ def revert_cron_d_permissions():
     try:
         logger.info("[CIS 2.4.1.7][REVERT] Geri alma işlemi başlatıldı...")
 
-        # Mevcut durumu logla
         success, output = run_command(["stat", "-Lc", "%a %u %g", "/etc/cron.d/"])
         if success:
             logger.debug(f"[CIS 2.4.1.7][REVERT] Mevcut stat: {output.strip()}")
         else:
             logger.warning(f"[CIS 2.4.1.7][REVERT] stat alınamadı: {output}")
 
-        # Varsayılana geri döndür
         run_command(["chown", "root:root", "/etc/cron.d/"])
         run_command(["chmod", "755", "/etc/cron.d/"])
 
-        # Kontrol et
         success, output = run_command(["stat", "-Lc", "%a %u %g", "/etc/cron.d/"])
         if not success:
             logger.error(f"[CIS 2.4.1.7][REVERT] stat alınamadı: {output}")

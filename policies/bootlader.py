@@ -114,7 +114,7 @@ def apply_disable_grub_password(username, parameters):
     
     changes_made = False
 
-    # 1. 'apply' tarafından oluşturulan parola dosyasını sil
+    # 'apply' tarafından oluşturulan parola dosyasını sil
     try:
         if os.path.exists(auth_file_path):
             logger.info(f"[POLICY] GRUB parola dosyası '{auth_file_path}' kaldırılıyor...")
@@ -128,7 +128,7 @@ def apply_disable_grub_password(username, parameters):
     except Exception as e:
         logger.error(f"[POLICY] '{auth_file_path}' silinirken istisna: {e}")
 
-    # 2. 'apply' tarafından 10_linux'e eklenen '--unrestricted' bayrağını kaldır
+    # 'apply' tarafından 10_linux'e eklenen '--unrestricted' bayrağını kaldır
     try:
         if os.path.exists(linux_config_path):
             logger.info(f"[POLICY] '{linux_config_path}' dosyasından '--unrestricted' bayrağı temizleniyor...")
@@ -177,7 +177,6 @@ def harden_bootloader_permissions(username, parameters):
     """
     grub.cfg dosyasının sahibinin root:root ve izinlerinin 600 (rw-------) olmasını sağlar.
     """
-    # Bu politika parametre gerektirmez.
     try:
         grub_cfg_path = _find_grub_cfg_path()
         if not grub_cfg_path:

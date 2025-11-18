@@ -31,19 +31,19 @@ def enforce_file_permissions(username, parameters):
 
         file_stat = os.stat(file_path)
         
-        # --- 1. Sahiplik Kontrolü ---
+        # Sahiplik Kontrolü 
         current_uid = file_stat.st_uid
         expected_uid = pwd.getpwnam(expected_owner_name).pw_uid
         owner_ok = (current_uid == expected_uid)
 
-        # --- 2. Grup Kontrolü ---
+        # Grup Kontrolü
         current_gid = file_stat.st_gid
         current_group_name = grp.getgrgid(current_gid).gr_name
         
         allowed_groups = expected_group_names.split(',')
         group_ok = (current_group_name in allowed_groups)
 
-        # --- 3. İzin Kontrolü ---
+        # İzin Kontrolü 
         # İzinler "beklenen" (örn: 644) VEYA "daha kısıtlayıcı" (örn: 640, 600) olmalı
         current_perms_oct = stat.S_IMODE(file_stat.st_mode)
         expected_perms_oct = int(expected_perms_str, 8)
@@ -57,7 +57,6 @@ def enforce_file_permissions(username, parameters):
         if expected_perms_str == "644" and (current_perms_oct == 0o640 or current_perms_oct == 0o600):
             perms_ok = True
 
-        # Tüm kontroller doğru mu
         if owner_ok and group_ok and perms_ok:
             return True, f"'{file_path}' için sahiplik ve izinler zaten doğru."
         else:
@@ -79,7 +78,7 @@ def apply_file_permissions(parameters):
     permissions = parameters.get("permissions")
 
     try:
-        # Düzeltme için listenin ilk elemanını (tercih edileni) kullan
+        # Düzeltme için listenin ilk elemanını (tercih edileni) kullanır
         preferred_group = group_list.split(',')[0]
         
         # Sahip ve grubu tek komutta ayarla
@@ -104,7 +103,7 @@ def apply_file_permissions(parameters):
 def secure_world_writable_files_and_dirs(username, parameters):
     """
     Sistemde herkese yazma izni olan dosyaları VE 'sticky bit'i olmayan dizinleri
-    tespit eder. Bulunursa, izinleri düzeltmek için 'apply' fonksiyonunu çağırır.
+    tespit eder.
     """
     try:
         # Bu, /proc, /sys ve geçici dizinlerdeki aramaları engeller.

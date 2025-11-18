@@ -38,7 +38,7 @@ def check_secure_apt_repositories(username, parameters):
     SOURCES_DIR_PATH = "/etc/apt/sources.list.d"
 
     try:
-        # 1. Sunucu parametrelerini al ve işle
+        # parametrelerini al ve işle
         main_content_str = parameters.get("main_repo_content")
         sources_d_json = parameters.get("sources_d_files_json")
 
@@ -54,7 +54,7 @@ def check_secure_apt_repositories(username, parameters):
         except json.JSONDecodeError:
             return False, f"Politika hatası: 'sources_d_files_json' geçerli bir JSON formatında değil."
 
-        # 2. Ana sources.list dosyasını kontrol et
+        # Ana sources.list dosyasını kontrol et
         if not os.path.exists(SOURCES_LIST_PATH):
              print(f"Denetim: {SOURCES_LIST_PATH} dosyası eksik. Düzeltme uygulanacak.")
              return apply_secure_apt_repositories(username, parameters) # 'username' argümanını da yolla
@@ -68,7 +68,7 @@ def check_secure_apt_repositories(username, parameters):
             print(f"Denetim: {SOURCES_LIST_PATH} içeriği farklı. Düzeltme uygulanacak.")
             return apply_secure_apt_repositories(username, parameters)
 
-        # 3. sources.list.d dizinini kontrol et
+        # sources.list.d dizinini kontrol et
         if not os.path.isdir(SOURCES_DIR_PATH):
              os.makedirs(SOURCES_DIR_PATH) 
              
@@ -287,19 +287,19 @@ def audit_pending_updates(username, parameters):
     """
     
     try:
-        # 1. Adım: Depo listesini yenile (apt update)
+        # Depo listesini yenile (apt update)
         success, output = run_command(['sudo', 'apt-get', 'update'], timeout=120)
         
         if not success:
             return False, f"'apt-get update' başarısız oldu. Depo yapılandırmasını (Policy 1.2.1.2) veya internet bağlantısını kontrol edin. Hata: {output}"
 
-        # 2. Adım: Yükseltilebilecek paketleri listele
+        # Yükseltilebilecek paketleri listele
         success, output = run_command(['sudo', 'apt', 'list', '--upgradable'])
         
         if not success:
             return False, f"'apt list --upgradable' komutu çalıştırılamadı. Hata: {output}"
 
-        # 3. Adım: Çıktıyı analiz et     
+        # Çıktıyı analiz et     
         lines = output.strip().splitlines()
         package_lines = [line for line in lines if not line.strip().startswith('Listing...') and not line.strip().startswith('Listeleme...') and not line.strip().startswith('WARNING:')]        
         package_count = len(package_lines)
@@ -345,14 +345,14 @@ def apply_package_pinning(parameters):
         if not package_name or not version:
             return False, "Paket adı veya sürüm belirtilmedi."
 
-        # Pinleme dosyası oluştur
+        # Pinleme dosyası oluşturur
         pin_file = f"/etc/apt/preferences.d/{package_name}.pref"
         with open(pin_file, "w") as f:
             f.write(f"Package: {package_name}\n")
             f.write(f"Pin: version {version}\n")
             f.write(f"Pin-Priority: 1001\n")
 
-        # Paketi kilitle
+        # Paketi kilitler
         subprocess.run(["apt-mark", "hold", package_name], check=True)
 
         # Pinleme başarı kontrolü
@@ -388,17 +388,14 @@ def check_required_software(username, parameters):
     missing_packages = []
     try:
         for package in required_packages:
-            # run_command ile paketin durumunu kontrol et
             success, output = run_command(["dpkg", "-l", package])
-            # Komut başarısız olduysa veya çıktıda 'ii' (installed) durumu yoksa, paketi eksik olarak işaretle
+            # Komut başarısız olduysa veya çıktıda 'ii' (installed) durumu yoksa, paketi eksik olarak işaretler
             if not success or f"ii  {package}" not in output:
                 missing_packages.append(package)
 
-        # Eksik paket yoksa politika başarılıdır
         if not missing_packages:
             return True, "Gerekli tüm yazılımlar zaten kurulu."
         
-        # Eksik paketler varsa apply fonksiyonunu çağır
         return apply_required_software(missing_packages)
         
     except Exception as e:
@@ -410,15 +407,12 @@ def apply_required_software(missing_packages):
     """
     messages = []
     
-    # Kuruluma başlamadan önce depo listesini güncellemek iyi bir pratiktir.
     update_success, update_output = run_command(["sudo", "apt-get", "update"])
     if not update_success:
         return False, f"apt-get update başarısız oldu: {update_output}"
 
     try:
         for package in missing_packages:
-            # Her bir eksik paketi kurmak için run_command kullan
-            # Kurulum işlemleri için 'sudo' ve 'apt-get' kullanıldı
             install_success, install_output = run_command(["sudo", "apt-get", "install", "-y", package])
             
             if install_success:
@@ -426,7 +420,6 @@ def apply_required_software(missing_packages):
             else:
                 messages.append(f"'{package}' yüklenemedi. Hata: {install_output}")
 
-        # Tüm işlemlerin sonucunu tek bir mesajda birleştir
         return True, " ".join(messages)
         
     except Exception as e:

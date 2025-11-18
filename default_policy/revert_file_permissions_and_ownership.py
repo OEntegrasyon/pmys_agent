@@ -7,12 +7,12 @@ from utils import run_command;
 
 
 # 'enforce_file_permissions' politikasının hedeflediği dosyaların
-# varsayılan (genellikle daha az kısıtlayıcı) izinlerini burada tanımlayabiliriz.
+# varsayılan (genellikle daha az kısıtlayıcı) izinlerini burada tanımlı.
 DEFAULT_FILE_PERMISSIONS = {
     "/etc/passwd": "644",
-    "/etc/shadow": "640", # Bu zaten varsayılan ve güvenli, yine de kontrol listesinde
+    "/etc/shadow": "640",
     "/etc/group": "644",
-    "/etc/gshadow": "640" # Bu da varsayılan ve güvenli
+    "/etc/gshadow": "640"
 }
 
 def revert_file_permissions_and_ownership():

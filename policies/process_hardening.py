@@ -43,7 +43,7 @@ def apply_aslr_enabled(parameters):
     temp_path = "/tmp/99-aslr-hardening.conf"
     
     try:
-        # 1. Kalıcı dosyayı oluştur/düzelt
+        # Kalıcı dosyayı oluşturur veya düzeltir
         with open(temp_path, "w") as f:
             f.write(f"# Agent tarafından CIS 1.5.1 politikası için ayarlandı\n")
             f.write(f"{key} = {value}\n")
@@ -52,7 +52,7 @@ def apply_aslr_enabled(parameters):
         if not success:
             return False, f"Geçici dosya taşınırken hata: {output}."
 
-        # 2. Çalışan yapılandırmayı bu dosyadan yükle
+        # Çalışan yapılandırmayı bu dosyadan yükle
         success, output = run_command(['sudo', 'sysctl', '-p', config_path])
         if not success:
             return False, f"Sysctl yapılandırması yüklenirken hata: {output}."

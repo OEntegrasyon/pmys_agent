@@ -20,7 +20,7 @@ def ensure_apparmor_is_installed_and_active(username, parameters):
     required_packages = ["apparmor", "apparmor-utils"]
     
     try:
-        # 1. Paketlerin kurulu olup olmadığını kontrol et
+        # Paketlerin kurulu olup olmadığını kontrol et
         packages_installed = True
         for package in required_packages:
             result = subprocess.run(['dpkg', '-l', package], capture_output=True, text=True, check=False)
@@ -28,7 +28,7 @@ def ensure_apparmor_is_installed_and_active(username, parameters):
                 packages_installed = False
                 break
         
-        # 2. Servisin aktif olup olmadığını kontrol et
+        #  Servisin aktif olup olmadığını kontrol et
         service_active = False
         success, output = run_command(['systemctl', 'is-active', 'apparmor'])
         if success and output == "active":
@@ -71,7 +71,6 @@ def enforce_apparmor_in_bootloader(username, parameters):
     """
     GRUB yapılandırmasında AppArmor'un önyüklemede aktif edilmesini sağlar.
     """
-    # Bu politika parametre gerektirmez.
     grub_config_path = "/etc/default/grub"
     
     try:
@@ -81,7 +80,7 @@ def enforce_apparmor_in_bootloader(username, parameters):
         with open(grub_config_path, "r") as f:
             content = f.read()
 
-        # GRUB_CMDLINE_LINUX içinde gerekli parametreler var mı?
+        # GRUB_CMDLINE_LINUX içinde gerekli parametreler kontrolü
         cmdline_match = re.search(r'GRUB_CMDLINE_LINUX="([^"]*)"', content)
         if not cmdline_match:
             return False, "GRUB_CMDLINE_LINUX satırı bulunamadı."
@@ -107,18 +106,18 @@ def apply_apparmor_to_grub(config_path, current_content, current_cmdline):
         if "security=apparmor" not in new_cmdline:
             new_cmdline += " security=apparmor"
         
-        # Dosya içeriğini yeni cmdline ile değiştir
+        # Dosya içeriğini yeni cmdline ile değiştirir
         new_content = current_content.replace(f'GRUB_CMDLINE_LINUX="{current_cmdline}"', f'GRUB_CMDLINE_LINUX="{new_cmdline.strip()}"')
         
         temp_path = "/tmp/grub.new"
         with open(temp_path, "w") as f:
             f.write(new_content)
 
-        # Değişiklikleri sudo ile uygula
+        # Değişiklikleri sudo ile uygular
         success, output = run_command(['sudo', 'mv', temp_path, config_path])
         if not success:
             return False, f"GRUB yapılandırma dosyası güncellenemedi: {output}"
-        # GRUB'u güncelle! Bu adım kritik.
+        
         success, output = run_command(['sudo', 'update-grub'])
         if not success:
             return False, f"GRUB güncellenirken hata: {output}"
@@ -152,21 +151,21 @@ def apply_disable_apparmor_grub(username, parameters):
         return False, f"GRUB yapılandırma dosyası bulunamadı: {grub_file_path}"
         
     try:
-        # 1. GRUB dosyasını oku ve parametreleri kaldır
+        # GRUB dosyasını oku ve parametreleri kaldırır
         with open(grub_file_path, 'r') as f_in, open(grub_temp_path, 'w') as f_out:
             for line in f_in:
                 # Sadece ilgili satırı düzenle
                 if line.strip().startswith("GRUB_CMDLINE_LINUX_DEFAULT="):
                     original_line = line
                     
-                    # Parametreleri kaldır
+                    # Parametreleri kaldırır
                     line = line.replace("apparmor=1", "")
                     line = line.replace("security=apparmor", "")
                     
                     # Oluşabilecek çift boşlukları tek boşluğa indir
                     line = re.sub(r'\s+', ' ', line)
                     
-                    # Tırnak içindeki " " boşluklarını düzelt (örn: " quiet")
+                    # Tırnak içindeki " " boşluklarını düzeltme (örn: " quiet")
                     line = line.replace('=" ', '="')
                     
                     if original_line != line:
@@ -183,18 +182,18 @@ def apply_disable_apparmor_grub(username, parameters):
             os.remove(grub_temp_path)
             return True, "AppArmor, GRUB'da zaten devre dışı görünüyor."
 
-        # 2. Geçici dosyayı orijinal dosyanın üzerine yaz (sudo ile)
+        # Geçici dosyayı orijinal dosyanın üzerine yaz (sudo ile)
         move_cmd = ['sudo', 'mv', grub_temp_path, grub_file_path]
         success, output = run_command(move_cmd)
         if not success:
             logger.error(f"[POLICY] GRUB dosyası güncellenirken hata (mv): {output}")
             return False, f"GRUB dosyası güncellenemedi: {output}"
             
-        # 3. Dosyanın sahipliğini ve izinlerini düzelt
+        # Dosyanın sahipliğini ve izinlerini düzelt
         run_command(['sudo', 'chown', 'root:root', grub_file_path])
         run_command(['sudo', 'chmod', '644', grub_file_path])
 
-        # 4. update-grub komutunu çalıştır
+        # update-grub komutunu çalıştır
         logger.info("[POLICY] GRUB yapılandırması güncelleniyor (update-grub)... Bu işlem biraz sürebilir.")
         update_cmd = ['sudo', 'update-grub']
         success, output = run_command(update_cmd)
@@ -214,7 +213,6 @@ def apply_disable_apparmor_grub(username, parameters):
         return False, f"GRUB ayarları geri alınırken istisna oluştu: {e}"
 
 # ------------------------------------------------------------------------------
-# Politika 3: Tüm AppArmor Profillerini Enforce veya Complain Modunda oldupundan emin ol
 def _parse_apparmor_status(output):
     """
     'apparmor_status' komutunun çıktısını analiz eder ve iki önemli
@@ -253,11 +251,11 @@ def ensure_no_apparmor_profiles_are_disabled(username, parameters):
 
         disabled_count, unconfined_count = _parse_apparmor_status(output)
 
-        # 1. Kontrol: Devre dışı (disabled) profil var mı?
+        # Kontrol: Devre dışı (disabled) profil var mı?
         if disabled_count > 0:
             return False, f"Uyumsuz: Sistemde {disabled_count} adet 'disabled' (devre dışı) AppArmor profili bulundu."
 
-        # 2. Kontrol: Korumasız (unconfined) süreç var mı?
+        # Kontrol: Korumasız (unconfined) süreç var mı?
         if unconfined_count > 0:
             return False, f"Uyumsuz: Sistemde {unconfined_count} adet 'unconfined' (korumasız) çalışan süreç bulundu."
             
@@ -268,8 +266,6 @@ def ensure_no_apparmor_profiles_are_disabled(username, parameters):
         return False, f"AppArmor denetimi sırasında genel hata: {e}"
 
 
-# ------------------------------------------------------------------------------
-# Politika 4: Tüm AppArmor Profillerini 'enforce' Moduna Al
 
 def _parse_apparmor_status_level2(output):
     """
@@ -279,22 +275,22 @@ def _parse_apparmor_status_level2(output):
     """
     non_enforced_count = 0
     
-    # 1. 'complain' modundaki profiller (Uyumsuz)
+    # 'complain' modundaki profiller (Uyumsuz)
     complain_profiles_match = re.search(r"^\s*(\d+)\s+profiles\s+are\s+in\s+complain\s+mode", output, re.MULTILINE)
     if complain_profiles_match:
         non_enforced_count += int(complain_profiles_match.group(1))
 
-    # 2. 'disabled' (devre dışı) profiller (Uyumsuz)
+    # 'disabled' (devre dışı) profiller (Uyumsuz)
     disabled_profiles_match = re.search(r"^\s*(\d+)\s+profiles\s+are\s+disabled", output, re.MULTILINE)
     if disabled_profiles_match:
         non_enforced_count += int(disabled_profiles_match.group(1))
         
-    # 3. 'complain' modundaki süreçler (Uyumsuz)
+    # 'complain' modundaki süreçler (Uyumsuz)
     complain_processes_match = re.search(r"^\s*(\d+)\s+processes\s+are\s+in\s+complain\s+mode", output, re.MULTILINE)
     if complain_processes_match:
         non_enforced_count += int(complain_processes_match.group(1))
 
-    # 4. 'unconfined' (korumasız) süreçler (Kritik - Uyumsuz)
+    # 'unconfined' (korumasız) süreçler (Kritik - Uyumsuz)
     unconfined_processes_match = re.search(r"^\s*(\d+)\s+processes\s+are\s+unconfined", output, re.MULTILINE)
     if unconfined_processes_match:
         non_enforced_count += int(unconfined_processes_match.group(1))
@@ -311,13 +307,12 @@ def set_apparmor_profiles_to_enforce(username, parameters):
     """
     
     try:
-        # CIS Audit komutunu çalıştır.
         success, output = run_command(['sudo', 'apparmor_status'])
         
         if not success:
             return False, f"'apparmor_status' komutu çalıştırılamadı. AppArmor yüklü mü? Hata: {output}"
 
-        # Çıktıyı analiz et
+        # Çıktıyı analiz eder
         non_enforced_count = _parse_apparmor_status_level2(output)
 
         if non_enforced_count == 0:
@@ -337,10 +332,8 @@ def apply_enforce_all_profiles(username, parameters):
     Tüm AppArmor profillerini 'enforce' (Sıkı Mod) moduna alır.
     """
     
-    # CIS 1.3.1.4 tarafından önerilen tek Düzeltme komutu
     enforce_cmd = ['sudo', 'aa-enforce', '/etc/apparmor.d/*']
     
-    # Değişiklikleri etkinleştirmek için 'reload' komutunu da çalıştırmak
     reload_cmd = ['sudo', 'service', 'apparmor', 'reload']
 
     try:

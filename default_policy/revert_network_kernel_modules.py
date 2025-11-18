@@ -6,7 +6,6 @@ from logger import logger
 from utils import run_command;
 
 
-# CIS Bölüm 3.2'deki ağ modüllerinin listesi
 MODULES_TO_RE_ENABLE = [
     "dccp",
     "tipc",

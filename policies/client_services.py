@@ -64,7 +64,7 @@ def apply_package_removal(package_name: str) -> tuple[bool, str]:
     except Exception as e:
         return False, f"Paket kaldırılırken genel bir hata oluştu: {e}"
 # ==============================================================================
-### CIS 2.1.1: autofs Servisinin Kullanımda Olmadığından Emin Ol ###
+### CIS 2.1.1: autofs Servisinin Kullanımda Olmamalı ###
 
 def check_automount_block (username, parameters):
     """

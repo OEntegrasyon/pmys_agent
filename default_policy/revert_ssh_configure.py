@@ -44,7 +44,6 @@ def revert_sshd_config_permissions():
 
         for f in files_to_revert:
             try:
-                # Varsayılana döndür
                 run_command(["chmod", "644", f])
                 run_command(["chown", "root:root", f])
 
@@ -171,7 +170,7 @@ def revert_sshd_access():
             logger.info(f"[CIS 5.1.4][REVERT] {msg}")
             return True, msg
 
-        # Orijinal dosyayı yedekle
+        # yedekle
         backup_path = SSHD_CONFIG + ".bak_revert"
         shutil.copy2(SSHD_CONFIG, backup_path)
         logger.debug(f"[CIS 5.1.4][REVERT] Yedek oluşturuldu: {backup_path}")
@@ -192,7 +191,6 @@ def revert_sshd_access():
         run_command(["systemctl", "reload", "sshd"])
         logger.info("[CIS 5.1.4][REVERT] SSH servisi reload edildi, Allow/Deny satırları kaldırıldı.")
 
-        # Durumu doğrula
         success, msg = check_sshd_access()
         if not success:
             logger.info("[CIS 5.1.4][REVERT] Revert başarılı: tüm erişim kısıtlamaları kaldırıldı.")
@@ -249,7 +247,7 @@ def revert_sshd_banner():
         else:
             logger.info("[CIS 5.1.5][REVERT] Banner satırı zaten yok veya yorumlu, değişiklik yapılmadı.")
 
-        # Banner dosyasını temizle ama silme
+        # Banner dosyasını temizle
         if os.path.exists(BANNER_FILE):
             with open(BANNER_FILE, "w", encoding="utf-8") as f:
                 f.write("")
@@ -314,13 +312,11 @@ def revert_sshd_ciphers():
             logger.error(f"[CIS 5.1.6][REVERT] Config test hatası: {output}")
             return False, f"Config test hatası: {output}"
 
-        # SSH servisini yeniden başlat
         success, output = run_command(["systemctl", "restart", "sshd"])
         if not success:
             logger.error(f"[CIS 5.1.6][REVERT] sshd restart başarısız: {output}")
             return False, f"sshd restart başarısız: {output}"
 
-        # Kontrol
         ok, msg = check_sshd_ciphers(param={"ciphers": DEFAULT_CIPHERS})
         if ok:
             logger.info(f"[CIS 5.1.6][REVERT] Ciphers revert edildi: {msg}")
@@ -341,7 +337,7 @@ def revert_ssh_client_alive():
     Varsayılan veya önceki değerler bilinmiyorsa parametreleri kaldırır.
     """
     try:
-        # Mevcut sshd_config'i oku
+        # oku
         content = read_sshd_config()
         lines = content.splitlines()
         new_lines = []
@@ -411,10 +407,9 @@ def revert_sshd_disableforwarding():
         else:
             logger.info("[CIS 5.1.8][REVERT] DisableForwarding satırı bulunamadı, işlem yapılmadı (varsayılan: no).")
 
-        # --- Revert sonrası doğrulama ---
         ok, msg = check_sshd_disableforwarding()
 
-        # Eğer parametre kaldırılmışsa (varsayılan 'no' geçerli), bu başarıdır
+
         if "bulunamadı" in msg.lower() or "varsayılan" in msg.lower():
             logger.info("[CIS 5.1.8][REVERT] DisableForwarding kaldırıldı, varsayılan (no) değeri geçerli.")
             return True, "DisableForwarding revert edildi, parametre kaldırıldı (varsayılan: no)."
@@ -468,7 +463,6 @@ def revert_sshd_gssapiauthentication():
         else:
             logger.info("[CIS 5.1.9][REVERT] GSSAPIAuthentication satırı bulunamadı, işlem yapılmadı (varsayılan: no).")
 
-        # ---- Revert sonrası doğrulama ----
         ok, msg = check_sshd_gssapiauthentication()
 
         if "tanımsız" in msg.lower() or "bulunamadı" in msg.lower():
@@ -504,7 +498,6 @@ def revert_sshd_hostbasedauthentication():
             logger.warning(f"[CIS 5.1.10][REVERT] {SSHD_CONFIG} bulunamadı.")
             return False, f"{SSHD_CONFIG} bulunamadı."
 
-        # SSHD_CONFIG içindeki HostbasedAuthentication satırlarını kaldır
         with open(SSHD_CONFIG, "r", encoding="utf-8") as f:
             lines = f.readlines()
 
@@ -519,19 +512,16 @@ def revert_sshd_hostbasedauthentication():
         else:
             logger.info("[CIS 5.1.10][REVERT] HostbasedAuthentication satırı bulunamadı, revert gerekmedi.")
 
-        # SSH servisini yeniden yükle
         success, output = run_command(["systemctl", "reload", "sshd"])
         if not success:
             logger.error(f"[CIS 5.1.10][REVERT] sshd reload başarısız: {output}")
             return False, f"sshd reload başarısız: {output}"
 
-        # --- Doğrudan doğrulama (check yerine) ---
         success, out = run_command(["sshd", "-T"])
         if not success:
             logger.warning(f"[CIS 5.1.10][REVERT] sshd -T komutu çalışmadı: {out}")
             return True, "HostbasedAuthentication revert edildi ancak doğrulama yapılamadı."
 
-        # sshd -T çıktısında kontrol
         found_value = None
         for line in out.splitlines():
             if line.strip().lower().startswith("hostbasedauthentication"):
@@ -540,7 +530,6 @@ def revert_sshd_hostbasedauthentication():
                     found_value = parts[-1].lower()
                 break
 
-        # Değerlendirme
         if not found_value:
             logger.info("[CIS 5.1.10][REVERT] HostbasedAuthentication parametresi yok (varsayılan: no).")
             return True, "HostbasedAuthentication kaldırıldı (varsayılan: no)."
@@ -647,18 +636,15 @@ def revert_sshd_kexalgorithms():
         else:
             logger.info("[CIS 5.1.12][REVERT] KexAlgorithms satırı bulunamadı, revert gerekmedi.")
 
-        # SSH yapılandırma testi
         ok_t, out_t = run_command(["sshd", "-t"])
         if not ok_t:
             logger.error(f"[CIS 5.1.12][REVERT] sshd test hatası: {out_t}")
             return False, f"sshd test hatası: {out_t}"
 
-        # SSH servisini reload et
         ok_reload, out_reload = run_command(["systemctl", "reload", "sshd"])
         if not ok_reload:
             logger.warning(f"[CIS 5.1.12][REVERT] sshd reload başarısız: {out_reload}")
 
-        # Doğrudan doğrulama (zayıf algoritma var mı?)
         ok_v, out_v = run_command(["sshd", "-T"])
         if not ok_v:
             logger.warning("[CIS 5.1.12][REVERT] sshd -T çalıştırılamadı.")
@@ -692,7 +678,6 @@ def revert_sshd_logingracetime():
         for conf_file in conf_files:
             try:
                 if os.path.exists(conf_file):
-                    # Yedek al
                     shutil.copy2(conf_file, f"{conf_file}.bak")
                     # LoginGraceTime satırlarını kaldır
                     with open(conf_file, "r", encoding="utf-8") as f:
@@ -704,7 +689,6 @@ def revert_sshd_logingracetime():
             except Exception as e:
                 failed_files.append(f"{conf_file} hata: {e}")
 
-        # SSH servisini reload et
         run_command(["systemctl", "reload", "sshd"])
 
         msg = f"LoginGraceTime revert edildi. Düzenlenen dosyalar: {removed_files}"
@@ -766,7 +750,7 @@ def revert_sshd_macs():
         backup_file = BACKUP_CONFIG
         shutil.copy2(SSHD_CONFIG, backup_file)
 
-        # Mevcut MACs satırlarını kaldır
+        # Mevcut MACs satırlarını kaldırır
         with open(SSHD_CONFIG, "r", encoding="utf-8") as f:
             lines = f.readlines()
         new_lines = [line for line in lines if not line.strip().lower().startswith("macs")]
@@ -774,7 +758,6 @@ def revert_sshd_macs():
         with open(SSHD_CONFIG, "w", encoding="utf-8") as f:
             f.writelines(new_lines)
 
-        # SSH servisini reload et
         run_command(["systemctl", "reload", "sshd"])
 
         logger.info(f"[CIS 5.1.15][REVERT] MACs revert edildi, varsayılan değer kullanılıyor. Yedek: {backup_file}")
@@ -795,11 +778,9 @@ def revert_sshd_maxauthtries():
         if not os.path.exists(SSHD_CONFIG):
             return False, f"{SSHD_CONFIG} bulunamadı."
 
-        # Yedek al
         backup_file = f"{SSHD_CONFIG}.bak"
         shutil.copy2(SSHD_CONFIG, backup_file)
 
-        # Mevcut MaxAuthTries satırlarını kaldır
         with open(SSHD_CONFIG, "r", encoding="utf-8") as f:
             lines = f.readlines()
         new_lines = [line for line in lines if not line.strip().lower().startswith("maxauthtries")]
@@ -807,7 +788,6 @@ def revert_sshd_maxauthtries():
         with open(SSHD_CONFIG, "w", encoding="utf-8") as f:
             f.writelines(new_lines)
 
-        # SSH servisini reload et
         run_command(["sudo", "systemctl", "reload", "sshd"])
 
         logger.info(f"[CIS 5.1.16][REVERT] MaxAuthTries revert edildi, varsayılan değer kullanılıyor. Yedek: {backup_file}")
@@ -833,11 +813,9 @@ def revert_sshd_maxsessions():
             if not os.path.exists(conf_file):
                 continue
 
-            # Yedek al
             backup_file = f"{conf_file}.bak"
             shutil.copy2(conf_file, backup_file)
 
-            # MaxSessions satırlarını kaldır
             with open(conf_file, "r", encoding="utf-8") as f:
                 lines = f.readlines()
             new_lines = [line for line in lines if not line.strip().lower().startswith("maxsessions")]
@@ -851,7 +829,7 @@ def revert_sshd_maxsessions():
             if not ok_test:
                 logger.error(f"[CIS 5.1.17][REVERT] sshd config test hatası: {out_test}")
                 return False, f"sshd config test hatası: {out_test}"
-        # SSH servisini reload et
+
         run_command(["sudo", "systemctl", "reload", "sshd"])
 
         return True, f"MaxSessions revert tamamlandı. Yedekler: {reverted_files}. Varsayılan değer geçerli."
@@ -883,11 +861,9 @@ def revert_sshd_maxstartups(cis_default=True):
             with open(conf_file, "r", encoding="utf-8") as f:
                 lines = f.readlines()
 
-            # MaxStartups satırlarını kaldır
             new_lines = [line for line in lines if not line.strip().lower().startswith("maxstartups")]
 
             if cis_default:
-                # CIS önerilen varsayılana dön
                 insert_index = 0
                 for i, line in enumerate(new_lines):
                     if re.match(r'^\s*(Include|Match)\b', line, re.IGNORECASE):
@@ -925,11 +901,9 @@ def revert_sshd_permitemptypasswords():
             if not os.path.exists(conf_file):
                 continue
 
-            # Yedek al
             backup_file = f"{conf_file}.bak"
             shutil.copy2(conf_file, backup_file)
 
-            # PermitEmptyPasswords satırlarını kaldır
             with open(conf_file, "r", encoding="utf-8") as f:
                 lines = f.readlines()
             new_lines = [line for line in lines if not line.strip().lower().startswith("permitemptypasswords")]
@@ -945,7 +919,6 @@ def revert_sshd_permitemptypasswords():
             logger.error(f"[CIS 5.1.19][REVERT] sshd config test hatası: {out_test}")
             return False, f"sshd config test hatası: {out_test}"
 
-        # SSH servisini reload et
         run_command(["sudo", "systemctl", "reload", "sshd"])
 
         return True, f"PermitEmptyPasswords revert tamamlandı. Yedekler: {reverted_files}. Varsayılan değer geçerli."
@@ -971,11 +944,9 @@ def revert_sshd_permitrootlogin():
             if not os.path.exists(conf_file):
                 continue
 
-            # Yedek al
             backup_file = f"{conf_file}.bak"
             shutil.copy2(conf_file, backup_file)
 
-            # PermitRootLogin satırlarını kaldır
             with open(conf_file, "r", encoding="utf-8") as f:
                 lines = f.readlines()
             new_lines = [line for line in lines if not line.strip().lower().startswith("permitrootlogin")]
@@ -991,7 +962,6 @@ def revert_sshd_permitrootlogin():
             logger.error(f"[CIS 5.1.20][REVERT] sshd config test hatası: {out_test}")
             return False, f"sshd config test hatası: {out_test}"
 
-        # SSH servisini reload et
         run_command(["sudo", "systemctl", "reload", "sshd"])
 
         return True, f"PermitRootLogin revert tamamlandı. Yedekler: {reverted_files}. Varsayılan değer geçerli."
@@ -1016,7 +986,7 @@ def revert_sshd_permit_user_environment():
         backup_file = f"{config_file}.bak"
         shutil.copy2(config_file, backup_file)
 
-        # PermitUserEnvironment satırlarını kaldır
+        # PermitUserEnvironment satırlarını kaldırır
         with open(config_file, "r", encoding="utf-8") as f:
             lines = f.readlines()
         new_lines = [line for line in lines if not line.strip().lower().startswith("permituserenvironment")]
@@ -1029,7 +999,6 @@ def revert_sshd_permit_user_environment():
             logger.error(f"[CIS 5.1.21][REVERT] sshd config test hatası: {out_test}")
             return False, f"sshd config test hatası: {out_test}"
 
-        # SSH servisini reload et
         run_command(["systemctl", "reload", "sshd"])
 
         logger.info(f"[CIS 5.1.21][REVERT] PermitUserEnvironment satırı kaldırıldı. Yedek: {backup_file}")
@@ -1055,7 +1024,7 @@ def revert_sshd_usepam():
         backup_file = f"{sshd_config}.bak"
         shutil.copy2(sshd_config, backup_file)
 
-        # UsePAM satırlarını kaldır
+        # UsePAM satırlarını kaldırır
         with open(sshd_config, "r", encoding="utf-8") as f:
             lines = f.readlines()
         new_lines = [line for line in lines if not line.strip().lower().startswith("usepam")]
@@ -1068,7 +1037,6 @@ def revert_sshd_usepam():
             logger.error(f"[CIS 5.1.22][REVERT] sshd config test hatası: {out_test}")
             return False, f"sshd config test hatası: {out_test}"
             
-        # SSH servisini reload et
         run_command(["systemctl", "reload", "sshd"])
 
         logger.info(f"[CIS 5.1.22][REVERT] UsePAM satırı kaldırıldı. Yedek: {backup_file}")

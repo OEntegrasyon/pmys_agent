@@ -24,7 +24,6 @@ def _revert_package_removals():
     logger.info("[DEFAULT] Kaldırılmış paketler kontrol ediliyor...")
     
     try:
-        # Paket listesini güncellemek her zaman iyi bir pratiktir.
         logger.info("[DEFAULT] Paket listesi güncelleniyor (apt-get update)...")
         success, output = run_command(['sudo', 'apt-get', 'update'])
         if not success:
@@ -48,7 +47,6 @@ def _revert_package_removals():
                     return
                 logger.info(f"[DEFAULT] '{package_name}' paketi başarıyla yüklendi.")
             else:
-                # Paket zaten kuruluysa, bir şey yapmaya gerek yok.
                 logger.info(f"[DEFAULT] '{package_name}' paketi zaten kurulu (varsayılan durum).")
         except Exception as e:
             logger.error(f"[DEFAULT] '{package_name}' paketi işlenirken genel hata: {e}")

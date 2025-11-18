@@ -24,7 +24,7 @@ def check_password_expiration(max_days):
     PASS_MAX_DAYS değerini /etc/login.defs ve /etc/shadow dosyalarında kontrol eder.
     """
     try:
-        # 1. /etc/login.defs kontrolü
+        # /etc/login.defs kontrolü
         with open("/etc/login.defs", "r") as f:
             content = f.readlines()
 
@@ -43,7 +43,7 @@ def check_password_expiration(max_days):
             logger.warning(f"[CIS 5.4.1.1] PASS_MAX_DAYS uygunsuz: {current_value}")
             return False, current_value
 
-        # 2. /etc/shadow kontrolü
+        # /etc/shadow kontrolü
         bad_users = []
         with open("/etc/shadow", "r") as f:
             for line in f:
@@ -111,11 +111,11 @@ def apply_password_expiration(username=None, param=None):
 
         logger.info(f"[apply_password_expiration] {login_defs} PASS_MAX_DAYS {max_days} olarak güncellendi.")
 
-        # 2. root kullanıcısı için maxdays + last change date ayarla
+        # root kullanıcısı için maxdays + last change date ayarla
         run_command(["chage", "--maxdays", str(max_days), "root"])
         run_command(["chage", "-d", datetime.now().strftime("%Y-%m-%d"), "root"])
 
-        # 3. Normal kullanıcılar için uygula
+        # Normal kullanıcılar için uygula
         with open("/etc/passwd", "r") as f:
             for line in f:
                 parts = line.strip().split(":")
@@ -147,7 +147,7 @@ def check_min_password_days(expected_value=1):
             logger.warning("[check_min_password_days] /etc/login.defs bulunamadı.")
             return False, "/etc/login.defs bulunamadı"
 
-        # 1) /etc/login.defs içinden PASS_MIN_DAYS'i bul
+        # /etc/login.defs içinden PASS_MIN_DAYS'i bul
         current_value = None
         with open(login_defs, "r", encoding="utf-8") as f:
             for line in f:
@@ -168,7 +168,7 @@ def check_min_password_days(expected_value=1):
             logger.warning(f"[check_min_password_days] /etc/login.defs PASS_MIN_DAYS={current_value}, beklenen >= {expected_value}")
             return False, f"/etc/login.defs PASS_MIN_DAYS={current_value}, beklenen >= {expected_value}"
 
-        # 2) /etc/shadow kontrolü (şifreli hesaplar)
+        # /etc/shadow kontrolü (şifreli hesaplar)
         shadow = "/etc/shadow"
         if not os.path.exists(shadow):
             logger.warning("[check_min_password_days] /etc/shadow bulunamadı.")
@@ -214,7 +214,6 @@ def apply_min_password_days(username=None, param=None):
     try:
         expected_value = int(param.get("value", 1)) if param else 1
 
-        # İlk check — eğer zaten uygunsa çık
         ok, msg = check_min_password_days(expected_value)
         if ok:
             return True, f"PASS_MIN_DAYS zaten uygun: {msg}"
@@ -229,7 +228,6 @@ def apply_min_password_days(username=None, param=None):
         shutil.copy(login_defs, bak)   
         logger.info(f"[apply_min_password_days] Yedek alındı: {bak}")
 
-        # Dosyayı oku ve update et (yorum satırlarını koruyarak)
         found = False
         new_lines = []
         with open(login_defs, "r", encoding="utf-8") as f:
@@ -402,7 +400,7 @@ def check_password_hashing_algorithm(expected_algorithms=("SHA512", "YESCRYPT"))
         if not success or not out.strip():
             return False, "/etc/login.defs içinde ENCRYPT_METHOD bulunamadı"
 
-        # Yorum satırlarını filtrele
+        # Yorum satırlarını filtreler
         lines = [l for l in out.splitlines() if not l.strip().startswith("#")]
         if not lines:
             return False, "Yalnızca yorum satırları bulundu, etkin satır yok"
@@ -447,7 +445,7 @@ def apply_password_hashing_algorithm(username=None, param=None):
         except Exception as e:
             logger.warning(f"[APPLY][password_hashing_algorithm] Yedekleme hatası: {e}")
 
-        # Dosyayı oku, yorumları koruyarak güncelle
+        # Dosyayı okur, yorumları koruyarak günceller
         new_lines = []
         updated = False
         with open(login_defs, "r", encoding="utf-8") as f:
@@ -468,7 +466,6 @@ def apply_password_hashing_algorithm(username=None, param=None):
 
         logger.info(f"[APPLY][password_hashing_algorithm] /etc/login.defs güncellendi → ENCRYPT_METHOD {expected_algorithm}")
 
-        # Yeniden doğrulama
         ok2, msg2 = check_password_hashing_algorithm((expected_algorithm,))
         if ok2:
             logger.info(f"[APPLY][password_hashing_algorithm] ENCRYPT_METHOD başarıyla {expected_algorithm} olarak ayarlandı.")
@@ -489,7 +486,7 @@ def check_inactive_password_lock(expected_days=45):
     CIS 5.4.1.5 - Ensure inactive password lock is configured
     """
     try:
-        # Varsayılan değeri kontrol et
+        # Varsayılan değeri kontrol eder
         success, out = run_command(["useradd", "-D"])
         if success:
             m = re.search(r"INACTIVE=(\S+)", out)
@@ -577,7 +574,6 @@ def apply_inactive_password_lock(username=None, param=None):
             if not success:
                 logger.warning(f"[APPLY][inactive_password_lock] chage başarısız ({user}), dosya doğrudan güncellenecek: {out}")
 
-            # 🔧 Doğrudan güncelle
             parts[6] = str(days)
             new_lines.append(":".join(parts) + "\n")
             logger.info(f"[APPLY][inactive_password_lock] {user} için INACTIVE {days} olarak zorla yazıldı.")
@@ -856,7 +852,6 @@ def apply_only_root_gid0(username=None, param=None):
                 while new_gid in used_gids:
                     new_gid += 1
 
-                # Yeni grup oluştur
                 run_command(["groupadd", "-g", str(new_gid), f"{user}_grp"])
                 # Kullanıcının GID'sini değiştir
                 run_command(["usermod", "-g", str(new_gid), user])
@@ -1024,7 +1019,6 @@ def _get_root_path_env():
     success, out = run_command(["sudo", "-Hiu", "root", "env"])
     if not success:
         return False, out, None
-    # out örn: "PATH=/usr/local/sbin:/usr/local/bin:... \nHOME=/root\n..."
     for line in out.splitlines():
         if line.startswith("PATH="):
             return True, None, line.split("=", 1)[1]
@@ -1238,13 +1232,11 @@ def apply_root_umask(username=None, param=None):
         param = param or {}
         desired_umask = param.get("desired_umask", "0027")
 
-        # Önce check ile kontrol et
         compliant, msg = check_root_umask(desired_umask)
         if compliant:
             logger.info("[APPLY][5.4.2.6] Root umask zaten güvenli, işlem yapılmadı.")
             return True, f"Root umask zaten güvenli ({desired_umask})."
 
-        # Düzeltilmesi gerekiyorsa
         files = ["/root/.bash_profile", "/root/.bashrc"]
 
         for file in files:
@@ -1259,12 +1251,12 @@ def apply_root_umask(username=None, param=None):
             for line in lines:
                 stripped = line.strip()
                 if stripped.startswith("umask"):
-                    # Doğru değer zaten varsa ekleme yapma
+                    # Doğru değer zaten varsa ekleme yapmaz
                     if stripped == f"umask {desired_umask}":
                         umask_set = True
                         new_lines.append(line)
                     else:
-                        # Diğer umask satırlarını yorum satırına al
+                        # Diğer umask satırlarını yorum satırına alır
                         if not line.startswith("#"):
                             new_lines.append(f"# {line}")
                         else:
@@ -1272,7 +1264,7 @@ def apply_root_umask(username=None, param=None):
                 else:
                     new_lines.append(line)
 
-            # Eğer doğru umask satırı yoksa ekle
+            # Eğer doğru umask satırı yoksa ekler
             if not umask_set:
                 new_lines.append(f"umask {desired_umask}\n")
 
@@ -1317,11 +1309,11 @@ def check_system_accounts_shell():
                 except ValueError:
                     continue
 
-                # root ve bazı özel kullanıcıları atla
+                # root ve bazı özel kullanıcıları atlar
                 if user in ("root", "halt", "sync", "shutdown", "nfsnobody"):
                     continue
 
-                # sistem hesabı mı?
+                # sistem hesabı kontrolü
                 if uid < uid_min or uid == 65534:
                     if not (shell.endswith("nologin") or shell.endswith("false")):
                         insecure_users.append(f"{user}:{shell}")
@@ -1391,7 +1383,7 @@ def check_accounts_without_login_shell_locked():
             logger.error("[CHECK][5.4.2.8] Geçerli shell listesi alınamadı.")
             return False
 
-        # Login shell olmayan kullanıcıları bul
+        # Login shell olmayan kullanıcıları bulur
         users_cmd = [
             "bash", "-c",
             f"awk -v pat=\"^({valid_shells})$\" -F: "
@@ -1675,19 +1667,19 @@ def apply_umask(username=None, param=None):
     try:
         desired_umask = (param or {}).get("value", "027")
 
-        # 1) PAM tarafındaki umask ayarlarını kaldır (CIS gereği shell override etmemeli)
+        # PAM tarafındaki umask ayarlarını kaldır (CIS gereği shell override etmemeli)
         pam_file = "/etc/pam.d/postlogin"
         if os.path.exists(pam_file):
             run_command(["bash", "-c",
                         "sed -i 's/^.*pam_umask.so.*umask=.*$/# &/' /etc/pam.d/postlogin"])
 
-        # 2) Shell dosyalarındaki tüm eski umask tanımlarını yorum satırı yap
+        # Shell dosyalarındaki tüm eski umask tanımlarını yorum satırı yapar
         for path in ["/etc/profile", "/etc/bashrc", "/etc/bash.bashrc",
                      "/etc/login.defs", "/etc/default/login"]:
             if os.path.exists(path):
                 run_command(["bash", "-c", f"sed -i 's/^umask/#&/' {path}"])
 
-        # 3) /etc/profile.d içine merkez tek bir umask tanımı oluştur
+        # /etc/profile.d içine merkez tek bir umask tanımı oluşturur
         umask_file = "/etc/profile.d/50-systemwide_umask.sh"
         with open(umask_file, "w") as f:
             f.write(f"umask {desired_umask}\n")

@@ -19,13 +19,13 @@ def revert_timesyncd_service():
     try:
         logger.info("[CIS 2.3.1.1][REVERT] timesyncd politikası geri alınıyor...")
 
-        # systemd-timesyncd devre dışı bırak
+        # systemd-timesyncd devre dışı bırakır
         run_command(["systemctl", "stop", "systemd-timesyncd.service"])
         run_command(["systemctl", "disable", "systemd-timesyncd.service"])
         run_command(["systemctl", "mask", "systemd-timesyncd.service"])
         logger.info("[CIS 2.3.1.1][REVERT] systemd-timesyncd devre dışı bırakıldı.")
 
-        # chrony paketi kurulu mu?
+        # chrony paketi kurulu mu kontrolü
         success_chrony, output_chrony = run_command(["dpkg", "-s", "chrony"])
         if not success_chrony or "install ok installed" not in output_chrony:
             logger.info("[CIS 2.3.1.1][REVERT] Chrony paketi bulunamadı, kuruluyor...")
@@ -33,7 +33,7 @@ def revert_timesyncd_service():
             run_command(["apt-get", "-y", "-qq", "install", "chrony"])
             logger.info("[CIS 2.3.1.1][REVERT] Chrony paketi kuruldu.")
 
-        # chrony servisini etkinleştir
+        # chrony servisini etkinleştirir
         run_command(["systemctl", "enable", "--now", "chrony.service"])
         logger.info("[CIS 2.3.1.1][REVERT] Chrony servisi etkinleştirildi ve başlatıldı.")
         return True, "[CIS 2.3.1.1][REVERT] timesyncd politikası başarıyla geri alındı."
@@ -62,7 +62,7 @@ def revert_systemd_timesyncd_authorized_timeserver():
         else:
             logger.info("[CIS 2.3.2.1][REVERT] Drop-in dosyası mevcut değil, işlem atlandı.")
 
-        # Dizini silmeye çalış (boşsa)
+        # Dizini siler (boşsa)
         try:
             if os.path.isdir(TIMESYNCD_CONF_DIR):
                 os.rmdir(TIMESYNCD_CONF_DIR)
@@ -70,7 +70,6 @@ def revert_systemd_timesyncd_authorized_timeserver():
         except OSError:
             logger.debug(f"[CIS 2.3.2.1][REVERT] {TIMESYNCD_CONF_DIR} dizini boş değil, silinmedi.")
 
-        # Servisi yeniden yükle
         run_command(["systemctl", "reload-or-restart", "systemd-timesyncd.service"])
         logger.info("[CIS 2.3.2.1][REVERT] systemd-timesyncd varsayılan ayarlarına döndü.")
 
@@ -149,14 +148,13 @@ def revert_chrony_authorized_timeserver():
             os.remove(DROPIN_FILE_CHRONY)
             logger.info(f"[CIS 2.3.3.1][REVERT] Drop-in dosyası silindi: {DROPIN_FILE_CHRONY}")
 
-            # sources.d klasörü boşsa kaldır
+            # sources.d klasörü boşsa kaldırır
             if os.path.isdir(SOURCES_DIR_CHRONY) and not os.listdir(SOURCES_DIR_CHRONY):
                 os.rmdir(SOURCES_DIR_CHRONY)
                 logger.info(f"[CIS 2.3.3.1][REVERT] Boş dizin silindi: {SOURCES_DIR_CHRONY}")
         else:
             logger.info("[CIS 2.3.3.1][REVERT] Drop-in dosyası mevcut değil, yapılacak bir şey yok.")
 
-        # chronyd yeniden yükle
         run_command(["systemctl", "reload-or-restart", "chronyd"])
         logger.info("[CIS 2.3.3.1][REVERT] Chrony varsayılan ayarlarına döndü.")
 
@@ -226,7 +224,6 @@ def revert_timesync_service():
     try:
         active_service = None
 
-        # Önce hangisi aktifse onu bul
         for name, unit in services.items():
             ok1, out1 = run_command(["systemctl", "is-enabled", unit])
             ok2, out2 = run_command(["systemctl", "is-active", unit])
@@ -242,7 +239,7 @@ def revert_timesync_service():
         name, unit = active_service
         logger.info(f"[CIS 2.3.3.3][REVERT] Aktif servis bulundu: {name} ({unit})")
 
-        # Servisi durdur ve disable et
+        # Servisi durdurur ve disable eder
         run_command(["systemctl", "stop", unit])
         run_command(["systemctl", "disable", unit])
 

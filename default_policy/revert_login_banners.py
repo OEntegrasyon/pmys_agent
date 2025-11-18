@@ -6,8 +6,6 @@ import tempfile
 from logger import logger
 from utils import run_command;
 
-# Pardus 23 varsayılan (default) içerikleri
-# (Bu içerikleri kendi sisteminizdeki varsayılanlara göre doğrulayabilirsiniz)
 DEFAULT_MOTD_CONTENT = """
 The programs included with the Pardus GNU/Linux system are free software;
 the exact distribution terms for each program are described in the

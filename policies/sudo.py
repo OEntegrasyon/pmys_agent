@@ -10,7 +10,7 @@ from utils import run_command;
 
 def check_restrict_sudo_commands(username, parameters):
     commands_param = parameters.get("commands", [])
-    # Gelen parametrenin tek bir string mi yoksa liste mi olduğunu kontrol et
+    # Gelen parametrenin tek bir string mi yoksa liste mi olduğunu kontrol eder
     if isinstance(commands_param, str):
         commands = [commands_param] 
     else:
@@ -217,7 +217,6 @@ def check_sudo_logfile_config(username, parameters):
             if not log_file_exists:
                 print(f"Denetim: '{log_file_path}' dosyası bulunamadı.")
             
-            # Eksik bir durum varsa, düzeltmeyi çağır.
             return apply_sudo_logfile_config(username, parameters)
 
     except Exception as e:
@@ -232,14 +231,11 @@ def apply_sudo_logfile_config(username, parameters):
     content = 'Defaults    logfile="/var/log/sudo.log"'
     log_file = "/var/log/sudo.log"
 
-    # Güvenli yazma işlemi için geçici bir dosya oluştur.
     fd, temp_path = tempfile.mkstemp(text=True)
     try:
-        # 1. Kuralı geçici dosyaya yaz.
         with os.fdopen(fd, 'w') as temp_file:
             temp_file.write(content + "\n")
 
-        # 2. KRİTİK: visudo ile sentaksı kontrol et.
         check_success, check_output = run_command(["sudo", "visudo", "-c", "-f", temp_path])
         if not check_success:
             os.remove(temp_path)
@@ -250,16 +246,13 @@ def apply_sudo_logfile_config(username, parameters):
             os.remove(temp_path)
             return False, f"Doğrulanmış sudo log yapılandırma dosyası taşınamadı: {move_output}"
         
-        # 4. Yapılandırma dosyasının izinlerini ayarla (sahibi root, izinler 0440).
         run_command(["sudo", "chown", "root:root", config_file_path])
         run_command(["sudo", "chmod", "0440", config_file_path])
         
-        # 5. Log dosyasının kendisini oluştur ve izinlerini ayarla.
         run_command(["sudo", "touch", log_file])
         run_command(["sudo", "chmod", "0640", log_file])
 
         return True, "Sudo log yapılandırması başarıyla uygulandı."
     finally:
-        # Her durumda geçici dosyanın silindiğinden emin ol.
         if os.path.exists(temp_path):
             os.remove(temp_path)

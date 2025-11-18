@@ -113,7 +113,6 @@ def check_libpam_modules():
     """
     installed_version, err = get_installed_package_version(PACKAGE)
     if err:
-        # get_installed_package_version zaten kurulu değil veya hata mesajı döndü
         return False, err
 
     if not installed_version:
@@ -172,7 +171,7 @@ def check_libpam_pwquality():
         if not success:
             return False, f"dpkg-query çalıştırılamadı: {output}"
 
-        lines = output.splitlines()  # 'result.stdout' yerine output
+        lines = output.splitlines()
         status_line = next((l for l in lines if l.startswith("Status:")), None)
         version_line = next((l for l in lines if l.startswith("Version:")), None)
 
@@ -288,11 +287,11 @@ def check_pam_faillock_enabled():
             "account": False
         }
 
-        # /etc/pam.d/common-auth içeriğini oku
+        # /etc/pam.d/common-auth içeriğini okur
         with open("/etc/pam.d/common-auth", "r") as f:
             auth_lines = f.readlines()
 
-        # /etc/pam.d/common-account içeriğini oku
+        # /etc/pam.d/common-account içeriğini okur
         with open("/etc/pam.d/common-account", "r") as f:
             account_lines = f.readlines()
 
@@ -306,13 +305,11 @@ def check_pam_faillock_enabled():
             if "pam_faillock.so" in line_s and "authfail" in line_s and "[default=die]" in line_s:
                 results["authfail"] = True
 
-        # account reset kontrolü
         for line in account_lines:
             line_s = line.strip()
             if "pam_faillock.so" in line_s and line_s.startswith("account"):
                 results["account"] = True
 
-        # Sonuç analizi
         if all(results.values()):
             return True, "CIS uyumlu: pam_faillock modülü doğru şekilde etkin."
         else:
@@ -331,16 +328,12 @@ def apply_pam_faillock(username=None, param=None):
     logger.warning("TEST: apply_pam_faillock fonksiyonu ÇALIŞTI!")
 
     try:
-        # Ön kontrol
         is_enabled, msg = check_pam_faillock_enabled()
         if is_enabled:
             return True, f"Değişiklik gerekmedi: {msg}"
         logger.warning("TEST: apply_pam_faillock fonksiyonu ÇALIŞTI!")
         logger.info("[PAMmmmmmmmmmmmm Faillock][APPLY] faillock profilleri oluşturuluyor...")
 
-        # ------------------------------------------------------------
-        # PROFİL 1: faillock
-        # ------------------------------------------------------------
 
         faillock_profile = (
             "Name: Enable pam_faillock to deny access\n"
@@ -354,9 +347,6 @@ def apply_pam_faillock(username=None, param=None):
         with open("/usr/share/pam-configs/faillock", "w", encoding="utf-8") as f:
             f.write(faillock_profile)
 
-        # ------------------------------------------------------------
-        # PROFİL 2: faillock_notify
-        # ------------------------------------------------------------
 
         faillock_notify_profile = (
             "Name: Notify of failed login attempts and reset count upon success\n"
@@ -373,11 +363,6 @@ def apply_pam_faillock(username=None, param=None):
         with open("/usr/share/pam-configs/faillock_notify", "w", encoding="utf-8") as f:
             f.write(faillock_notify_profile)
 
-        # ------------------------------------------------------------
-        # DOSYALAR OLUŞTU MU? (Güvenlik kontrolü)
-        # ------------------------------------------------------------
-        import os
-
         if not os.path.exists("/usr/share/pam-configs/faillock"):
             return False, "faillock dosyası oluşturulamadı!"
 
@@ -386,9 +371,6 @@ def apply_pam_faillock(username=None, param=None):
 
         logger.info("[PAM Faillock][APPLY] faillock profilleri oluşturuldu. pam-auth-update çalıştırılıyor...")
 
-        # ------------------------------------------------------------
-        # PROFİLLERİ AKTİF ET
-        # ------------------------------------------------------------
 
         success, output = run_command(["pam-auth-update", "--enable", "faillock"])
         if not success:
@@ -398,9 +380,6 @@ def apply_pam_faillock(username=None, param=None):
         if not success:
             return False, f"faillock_notify profili etkinleştirilemedi: {output}"
 
-        # ------------------------------------------------------------
-        # SON KONTROL
-        # ------------------------------------------------------------
 
         is_enabled, msg = check_pam_faillock_enabled()
 
@@ -458,7 +437,6 @@ def apply_pam_pwquality(username=None, param=None):
             return True, f"Değişiklik gerekmedi: {msg}"
 
         profile_path = "/usr/share/pam-configs/pwquality"
-        # CIS örneğine uygun profil dosyası oluştur
         profile_content = [
             "Name: Pwquality password strength checking",
             "Default: yes",
@@ -531,7 +509,7 @@ def apply_pwhistory(username=None, param=None):
         return True, f"Değişiklik gerekmedi: {msg}"
 
     try:
-        # Profil dosyası yoksa oluştur
+        # Profil dosyası yoksa oluşturur
         profile_content = "\n".join([
             "Name: pwhistory password history checking",
             "Default: yes",
@@ -592,7 +570,6 @@ def check_failed_attempts_lockout(expected_deny=DEFAULT_DENY):
         if deny_value > expected_deny:
             return False, f"deny={deny_value}, beklenen <= {expected_deny}"
 
-        # common-auth içinde hatalı deny= var mı?
         cmd = [
             "grep", "-Pi",
             r'^\s*auth.*pam_faillock\.so.*\bdeny\s*=\s*(0|[6-9]|[1-9][0-9]+)\b',
@@ -661,7 +638,7 @@ def check_unlock_time(param=None):
         if not os.path.exists(FAILLOCK_CONF):
             return False, f"{FAILLOCK_CONF} dosyası yok."
 
-        # unlock_time kontrol
+        # unlock_time kontrolü
         with open(FAILLOCK_CONF, "r") as f:
             data = f.read()
 
@@ -739,7 +716,6 @@ def apply_unlock_time(username=None, param=None):
             except Exception as e:
                 logger.warning(f"[CIS 5.3.3.1.2] Dosya düzenlenemedi {fpath}: {e}")
 
-        # Son kontrol
         ok2, msg2 = check_unlock_time({"unlock_time": expected})
         if ok2:
             return True, f"Uygulandı: {msg2}"
@@ -805,7 +781,7 @@ def check_root_account_lock(param=None):
 
 def apply_root_account_lock(username=None, param=None):
     """
-    CIS 5.3.3.1.3 - Root için lockout ayarlarını uygula
+    CIS 5.3.3.1.3 - Root için lockout ayarlarını uygular
     - even_deny_root ekle
     - root_unlock_time yoksa eklenmez, varsa min 60 yapılır
     - PAM içindeki root_unlock_time argümanlarını temizler
@@ -847,7 +823,7 @@ def apply_root_account_lock(username=None, param=None):
         with open(FAILLOCK_CONF, "w") as f:
             f.writelines(lines)
 
-        # 2) PAM içinden root_unlock_time temizle (varsa)
+        #PAM içinden root_unlock_time temizle (varsa)
         ok2, files = run_command(
             ["grep", "-Pl", r"pam_faillock\.so.*root_unlock_time", "/usr/share/pam-configs"]
         )
@@ -970,7 +946,6 @@ def check_min_password_length(param=None):
         if not (success and output.strip()):
             return False, f"pwquality.conf veya .d dizininde minlen {minlen} altında veya tanımsız."
 
-        # PAM içinde minlen 0-13 aranmamalı (bulunursa hatalı)
         success, pam_output = run_command([
             "grep", "-Psi",
             r"^\s*password.*pam_pwquality\.so.*minlen\s*=\s*([0-9]|1[0-3])\b",
@@ -1144,7 +1119,6 @@ def check_maxrepeat(expected_value=3):
             except Exception:
                 continue
 
-        # PAM tarafında uygunsuz maxrepeat var mı?
         pam_check = subprocess.run([
             "grep", "-Psi",
             r"^\s*password.*pam_pwquality\.so.*maxrepeat\s*=\s*(0|[4-9]|[1-9][0-9]+)\b",
@@ -1178,18 +1152,16 @@ def apply_maxrepeat(username=None, param=None):
         if ok:
             return True, f"Zaten uyumlu: {msg}"
 
-        #  Eski tanımları kaldır
+        #  Eski tanımları kaldırır
         run_command(["sed", "-ri", r"/^\s*maxrepeat\s*=/d", PWQUALITY_CONF])
 
         #  pwquality.conf.d dizinini oluştur
         os.makedirs(os.path.dirname(PWQUALITY_CONF_D), exist_ok=True)
 
-        #  Yeni değeri yaz
         with open(PWQUALITY_CONF_D, "w") as f:
             f.write(f"maxrepeat = {desired_value}\n")
         logger.info(f"[apply_maxrepeat] {PWQUALITY_CONF_D} dosyasına maxrepeat = {desired_value} yazıldı.")
 
-        # PAM modüllerinde uygunsuz tanımları temizle
         pam_dir = "/usr/share/pam-configs"
         success, output = run_command([
             "grep", "-Pl",
@@ -1231,7 +1203,6 @@ def check_maxsequence(expected_value=3):
                 if f.endswith(".conf")
             )
 
-        # maxsequence değerini tespit et
         found_value = None
         success, output = run_command([
             "grep", "-Psi", r"^\s*maxsequence\s*=\s*[0-9]+", *conf_files
@@ -1243,7 +1214,6 @@ def check_maxsequence(expected_value=3):
                     found_value = int(match.group(1))
                     break
 
-        # PAM içinde hatalı tanım var mı kontrol et
         success, pam_output = run_command([
             "grep", "-Psi",
             r"^\s*password.*pam_pwquality\.so.*maxsequence\s*=\s*(0|[4-9]|[1-9][0-9]+)\b",
@@ -1253,7 +1223,6 @@ def check_maxsequence(expected_value=3):
         if success and pam_output.strip():
             return False, f"common-password içinde hatalı maxsequence parametresi bulundu:\n{pam_output}"
 
-        # Değeri değerlendir
         if found_value is None:
             return False, "maxsequence parametresi bulunamadı."
         if found_value == 0:
@@ -1330,7 +1299,7 @@ def check_dictcheck(expected_value=1):
                 if f.endswith(".conf")
             )
 
-        # pwquality.conf ve .d dizininde dictcheck=0 var mı?
+        # pwquality.conf ve .d dizininde dictcheck=0 kontrolü
         for path in conf_files:
             if not os.path.isfile(path):
                 continue
@@ -1339,14 +1308,14 @@ def check_dictcheck(expected_value=1):
                     if re.match(r"^\s*dictcheck\s*=\s*0\b", line):
                         return False, f"{path} içinde dictcheck=0 bulundu."
 
-        # PAM tanımlarında dictcheck=0 var mı?
+        # PAM tanımlarında dictcheck=0 kontrolü
         if os.path.isfile(COMMON_PASSWORD):
             with open(COMMON_PASSWORD, "r") as f:
                 for line in f:
                     if "pam_pwquality.so" in line and "dictcheck=0" in line:
                         return False, f"{COMMON_PASSWORD} içinde dictcheck=0 bulundu."
 
-        # Özel dosyada dictcheck=1 tanımı var mı?
+        # Özel dosyada dictcheck=1 tanımı kontrolü
         if os.path.isfile(DICTCHECK_CONF):
             with open(DICTCHECK_CONF, "r") as f:
                 match = re.search(r"^\s*dictcheck\s*=\s*(\d+)", f.read(), re.MULTILINE)
@@ -1355,7 +1324,6 @@ def check_dictcheck(expected_value=1):
                 else:
                     return False, f"{DICTCHECK_CONF} içinde dictcheck değeri beklenenden farklı."
 
-        # dictcheck=0 bulunmadı ama 1 tanımı da yoksa
         return False, "dictcheck=1 tanımı açıkça bulunamadı (varsayılan olabilir)."
 
     except Exception as e:
@@ -1394,14 +1362,12 @@ def apply_dictcheck(username=None, param=None):
                 run_command(["sed", "-ri", r"s/\bdictcheck\s*=\s*\d+\b//g", f])
                 logger.info(f"[apply_dictcheck] {f} içindeki dictcheck parametresi temizlendi.")
 
-        # Yeni dosyayı oluştur
         os.makedirs(PWQUALITY_DIR, exist_ok=True)
         with open(DICTCHECK_CONF, "w") as f:
             f.write(f"dictcheck = {expected_value}\n")
 
         logger.info(f"[apply_dictcheck] dictcheck={expected_value} olarak ayarlandı ({DICTCHECK_CONF})")
 
-        # Son kontrol
         final_ok, final_msg = check_dictcheck(expected_value)
         if final_ok:
             return True, final_msg
@@ -1422,7 +1388,7 @@ def check_enforcing(expected_value=1):
     enforcing=0 olmamalı ve enforcing=1 aktif olmalı
     """
 
-    # 1) pwquality config'lerde enforcing=0 var mı?
+    # pwquality config'lerde enforcing=0 kontrolü
     cmd1 = [
         "grep", "-PHsi", r"^\h*enforcing\h*=\h*0\b",
         PWQUALITY_CONF, f"{PWQUALITY_DIR}/*.conf"
@@ -1431,7 +1397,7 @@ def check_enforcing(expected_value=1):
     if ok1 and out1.strip():
         return False, f"enforcing=0 bulundu:\n{out1}"
 
-    # 2) PAM common-password içinde override enforcing=0 var mı?
+    # PAM common-password içinde override enforcing=0 kontrolü
     cmd2 = [
         "grep", "-PHsi",
         r"^\h*password\h+[^#\n\r]+\h+pam_pwquality\.so\h+([^#\n\r]+\h+)?enforcing=0\b",
@@ -1441,7 +1407,7 @@ def check_enforcing(expected_value=1):
     if ok2 and out2.strip():
         return False, f"PAM override enforcing=0 bulundu:\n{out2}"
 
-    # 3) enforcing=1 ayarı 50-enforcing.conf içinde tanımlı mı?
+    # enforcing=1 ayarı 50-enforcing.conf kontrolü
     if os.path.isfile(ENFORCING_CONF):
         with open(ENFORCING_CONF, "r") as f:
             content = f.read()
@@ -1464,7 +1430,6 @@ def apply_enforcing(username=None, param=None):
 
     logger.info(f"[apply_enforcing] Uyum dışı: {msg} → düzeltiliyor...")
 
-    # 1) PAM config override içinde enforcing=0 geçenleri bul ve temizle
     cmd3 = [
         "grep", "-Pl",
         r"\bpam_pwquality\.so\h+([^#\n\r]+\h+)?enforcing=0\b",
@@ -1476,7 +1441,6 @@ def apply_enforcing(username=None, param=None):
             run_command(["sed", "-ri", r"s/\benforcing\s*=\s*0\b//g", conf])
             logger.info(f"[apply_enforcing] PAM override temizlendi: {conf}")
 
-    # 2) pwquality.conf ve .d/*.conf içinde enforcing=0 olanları yorum satırı yap
     cmd4 = [
         "sed", "-ri",
         r"s/^\s*enforcing\s*=\s*0/# &/",
@@ -1485,14 +1449,12 @@ def apply_enforcing(username=None, param=None):
     run_command(cmd4)
     logger.info("[apply_enforcing] pwquality enforcing=0 satırları yorumlandı")
 
-    # 3) enforcing=1 tanımını 50-enforcing.conf içine yaz
     os.makedirs(PWQUALITY_DIR, exist_ok=True)
     with open(ENFORCING_CONF, "w") as f:
         f.write(f"enforcing = {expected_value}\n")
 
     logger.info(f"[apply_enforcing] enforcing={expected_value} yazıldı: {ENFORCING_CONF}")
 
-    # 4) Son doğrulama
     final_ok, final_msg = check_enforcing(expected_value)
     return final_ok, final_msg
 
@@ -1572,7 +1534,7 @@ def check_password_reuse(param=None):
         with open(COMMON_PASSWORD, "r") as f:
             content = f.read()
 
-        # pam_pwhistory.so satırı var mı?
+        # pam_pwhistory.so satır kontrolü
         match = re.search(r"pam_pwhistory\.so.*remember=(\d+)", content)
         if not match:
             return False, "pam_pwhistory.so satırı bulunamadı."
@@ -1832,7 +1794,6 @@ def check_pam_unix_remember():
     CIS 5.3.3.4.2 - Ensure pam_unix does not include remember
     Hem /etc/pam.d/common-* hem de /usr/share/pam-configs/* altında kontrol eder.
     """
-    # 1) /etc/pam.d/common-*
     cmd_common = [
         "grep", "-PHs", "--",
         r'^[[:space:]]*[^#[:space:]]+[[:space:]]+pam_unix\.so.*remember=[0-9]+',
@@ -1841,7 +1802,6 @@ def check_pam_unix_remember():
     ok1, out1 = run_command(cmd_common)
     txt1 = (out1 or "").strip()
 
-    # 2) /usr/share/pam-configs/*
     cmd_profiles = [
         "grep", "-PHs", "--",
         r'^\h*.*pam_unix\.so\h+.*remember=\d+\b',
@@ -1869,13 +1829,13 @@ def apply_pam_unix_remember(username=None, param=None):
         return True, f"Zaten uyumlu: {msg}"
 
     # 1) /etc/pam.d/common-* dosyaları: remember=<N> temizle
-    #    Hem "remember=5" hem de boşluk varyasyonlarını yakalayalım.
+
     fix_common = [
         "bash", "-c",
         r"for f in /etc/pam.d/common-{password,auth,account,session,session-noninteractive}; do "
         r"  if [ -f \"$f\" ]; then "
         r"    sed -i -E 's/\<remember=[0-9]+//g' \"$f\"; "
-        r"    sed -i -E 's/[[:space:]]+/ /g' \"$f\"; "  # fazla boşluk temizleme (opsiyonel)
+        r"    sed -i -E 's/[[:space:]]+/ /g' \"$f\"; "
         r"  fi; "
         r"done"
     ]
@@ -1883,7 +1843,7 @@ def apply_pam_unix_remember(username=None, param=None):
     if not ok1:
         return False, f"/etc/pam.d/common-* düzenlenemedi: {out1}"
 
-    # 2) /usr/share/pam-configs/* içinde pam_unix satırlarından remember= kaldır
+
     fix_profiles = [
         "bash", "-c",
         r"for f in /usr/share/pam-configs/*; do "
@@ -1896,15 +1856,14 @@ def apply_pam_unix_remember(username=None, param=None):
     if not ok2:
         return False, f"/usr/share/pam-configs/* düzenlenemedi: {out2}"
 
-    # 3) PAM dosyalarını profilden yeniden üret
     ok3, out3 = run_command(["pam-auth-update", "--enable", "unix", "--force"])
     if not ok3:
-        # Bazı sistemlerde --force yok; fallback
+
         ok3b, out3b = run_command(["pam-auth-update", "--enable", "unix"])
         if not ok3b:
             return False, f"pam-auth-update başarısız: {out3 or out3b}"
 
-    # 4) Son kontrol
+
     okF, msgF = check_pam_unix_remember()
     if okF:
         return True, "remember argümanı tüm kaynaklardan kaldırıldı ve uyum doğrulandı."

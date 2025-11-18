@@ -103,7 +103,7 @@ def apply_screensaver_timeout(username=None, param=None):
         dakika = int(dakika_raw)
         saniye = dakika * 60
 
-        # önce ortam bilgileri
+        # ortam bilgileri
         user = get_logged_in_user()
         session_type = detect_desktop_env_from_processes()
         user, display, dbus = get_display_and_dbus_env()
@@ -439,11 +439,10 @@ show-home={str(show_home).lower()}
 
 def apply_gnome_desktop_icon_policy(username=None, param=None):
     """
-    GNOME masaüstündeki "Çöp" ve "Ev" simgelerinin görünürlüğünü merkezi olarak yönetir.
+    GNOME masaüstündeki örneğin "Çöp" ve "Ev" simgelerinin görünürlüğünü merkezi olarak yönetir.
     Root yetkisi gereklidir.
     """
     try:
-        # Parametre ayrıştırma
         if isinstance(param, str):
             param = json.loads(param)
         elif not isinstance(param, dict):

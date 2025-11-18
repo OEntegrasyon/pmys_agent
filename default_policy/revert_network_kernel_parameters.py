@@ -68,10 +68,8 @@ def revert_sysctl_parameters():
                 if not success:
                     logger.error(f"[DEFAULT] '{config_path}' kaldırılırken hata: {output}")
                 else:
-                    # Sadece silme başarılıysa 'True' olarak ayarla
                     changes_made = True
             else:
-                # Bu log, dosyanın zaten olmadığını (varsayılan durum) bilmek için faydalıdır.
                 logger.info(f"[DEFAULT] Sysctl kural dosyası '{config_path}' zaten yok (varsayılan).")
         
         except Exception as e:

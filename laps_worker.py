@@ -29,7 +29,7 @@ def ensure_user(username: str, shell: str = "/bin/bash"):
     else:
         _run(["usermod", "-s", shell, username])
 
-    # home dizinini garanti et
+    # home dizinini garanti eder
     home = f"/home/{username}"
     if not os.path.isdir(home):
         # mkhomedir_helper yoksa kendin oluştur
@@ -39,7 +39,7 @@ def ensure_user(username: str, shell: str = "/bin/bash"):
             os.makedirs(home, exist_ok=True)
             _run(["chown", "-R", f"{username}:{username}", home])
 
-    # hesabı kilitten çıkar ve bitiş tarihini iptal et
+    # hesabı kilitten çıkar ve bitiş tarihini iptal eder
     _run(["passwd", "-u", username])
     _run(["chage", "-E", "-1", username])  # never expires
 
@@ -72,7 +72,6 @@ def schedule_post_action(action: str, delay_min: int):
             user = os.getenv("SUDO_USER") or os.getenv("USER") or ""
             if user:
                 _run(["loginctl", "terminate-user", user])
-        # "reset": parola zaten resetlendi; ek adım yok
     if action and action != "none":
         t = threading.Timer(max(0, int(delay_min or 0)) * 60, _do)
         t.daemon = True
@@ -92,7 +91,6 @@ def generate_password(length=16, use_upper=True, use_lower=True, use_digits=True
     pw = must[:]
     while len(pw) < max(1, int(length or 16)):
         pw.append(secrets.choice(allchars))
-    # shuffle
     for i in range(len(pw)-1, 0, -1):
         j = secrets.randbelow(i+1)
         pw[i], pw[j] = pw[j], pw[i]
