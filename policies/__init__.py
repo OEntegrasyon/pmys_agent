@@ -40,8 +40,7 @@ from .network import (
     disable_bluetooth_service,
     check_ipv6_status,
     ensure_ipv6_disabled,
-    configure_sysctl_parameter,
-    check_network_configuration
+    configure_sysctl_parameter
 )
 
 from .package_managment import (

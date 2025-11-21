@@ -1,8 +1,9 @@
 import os
 import subprocess
 from datetime import datetime
-import logger
+import logger 
 from utils import get_logged_in_user, get_desktop_env, run_command
+import logging
 
 # ==============================================================================
 # == GÜVENSİZ PAKETLERİ KALDIRMA POLİTİKASI ===================================
@@ -79,7 +80,7 @@ def check_automount_block (username, parameters):
     
     if f"ii  {package_name}" in output:
         # Paket kurulu ise, uyumsuz durumdadır ve düzeltilmesi gerekir.
-        logger.info(f"'{package_name}' paketi kurulu, düzeltme uygulanıyor.")
+        logging.info(f"'{package_name}' paketi kurulu, düzeltme uygulanıyor.")
         return apply_autofs_removal_or_masking()
     else:
         # Paket kurulu değilse, sistem zaten uyumludur.
@@ -93,14 +94,14 @@ def apply_autofs_removal_or_masking():
     package_name = "autofs"
     service_name = "autofs.service"
 
-    logger.info(f"Birincil çözüm deneniyor: '{package_name}' paketi kaldırılacak (purge)...")
+    logging.info(f"Birincil çözüm deneniyor: '{package_name}' paketi kaldırılacak (purge)...")
     success, output = run_command(['sudo', 'apt-get', 'purge', '-y', package_name])
     
     if success:
         return True, f"'{package_name}' paketi ve yapılandırma dosyaları başarıyla kaldırıldı."
 
-    logger.warning(f"'{package_name}' paketi kaldırılamadı (muhtemelen başka bir pakete bağımlı).")
-    logger.info(f"İkincil çözüm deneniyor: '{service_name}' servisi durdurulup maskelenecek...")
+    logging.warning(f"'{package_name}' paketi kaldırılamadı (muhtemelen başka bir pakete bağımlı).")
+    logging.info(f"İkincil çözüm deneniyor: '{service_name}' servisi durdurulup maskelenecek...")
 
     # Önce servisi durdur
     run_command(['sudo', 'systemctl', 'stop', service_name])
