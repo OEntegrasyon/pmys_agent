@@ -680,29 +680,12 @@ def apply_last_password_change_in_past(username=None, param=None):
 
 
 
-def find_next_free_uid(start_uid=1001, max_uid=60000):
-    """
-    Sistemde kullanılmayan bir UID bulur.
-    start_uid'den başlayarak ilk boş UID'yi döndürür.
-    """
-    used_uids = {u.pw_uid for u in pwd.getpwall()}
-    for uid in range(start_uid, max_uid):
-        if uid not in used_uids:
-            return uid
-    raise ValueError("Boş UID bulunamadı!")
-
-
-
-def find_next_free_uid(start_uid=1001, max_uid=60000):
-    used_uids = {u.pw_uid for u in pwd.getpwall()}
-    for uid in range(start_uid, max_uid):
-        if uid not in used_uids:
-            return uid
-    raise ValueError("Boş UID bulunamadı!")
-
-
 def check_only_root_uid0():
+    """
+    CIS 5.4.2.1 – Ensure root is the only UID 0 account
+    """
     try:
+
         cmd = ["awk", "-F:", "($3 == 0) { print $1 }", "/etc/passwd"]
         code, out = run_command(cmd)
 
@@ -710,255 +693,342 @@ def check_only_root_uid0():
             return False, f"/etc/passwd okunamadı: {out}"
 
         users = [u.strip() for u in out.splitlines() if u.strip()]
+
         if users == ["root"]:
             return True, "UID 0 sadece root kullanıcısında var."
         else:
             return False, f"Uygunsuz UID 0 kullanıcıları: {', '.join(users)}"
+
     except Exception as e:
         logger.error(f"check_only_root_uid0 hata: {e}")
         return False, str(e)
 
 
-def sync_sudoers(user):
+
+PASSWD = "/etc/passwd"
+
+def fix_uid_in_passwd(user, new_uid):
     """
-    Kullanıcı UID değiştirilince sudo yetkilerini korumak için
-    sudoers dosyalarını kontrol eder. Eğer kullanıcı oradaysa
-    isim bazlı olduğundan ek işlem gerekmez ama log yazılır.
+    /etc/passwd içindeki kullanıcı satırını güvenli şekilde düzenler.
+    UID=0 olan kullanıcıları düzeltmek için tek yöntem budur.
     """
-    sudoers_files = ["/etc/sudoers"] + glob.glob("/etc/sudoers.d/*")
-    found = False
-    for sfile in sudoers_files:
-        try:
-            with open(sfile, "r") as f:
-                for line in f:
-                    if line.strip().startswith("#"):
-                        continue
-                    if user in line:
-                        found = True
-                        logger.info(f"{user} sudoers içinde bulundu ({sfile}) -> isim bazlı olduğundan UID değişiminden etkilenmedi.")
-        except Exception as e:
-            logger.warning(f"{sfile} okunamadı: {e}")
-    if not found:
-        logger.debug(f"{user} sudoers içinde bulunmadı.")
+
+    shutil.copy2(PASSWD, PASSWD + ".bak")
+
+    new_lines = []
+    updated = False
+
+    with open(PASSWD, "r") as f:
+        for line in f:
+            if line.startswith(f"{user}:"):
+                parts = line.split(":")
+                parts[2] = str(new_uid)
+                if parts[3].isdigit():
+                    parts[3] = str(new_uid)
+                new_line = ":".join(parts)
+                new_lines.append(new_line)
+                updated = True
+            else:
+                new_lines.append(line)
+
+    if not updated:
+        raise Exception(f"{user} passwd içinde bulunamadı.")
+
+    with open(PASSWD, "w") as f:
+        f.writelines(new_lines)
+
+    return True
+
+
+def find_next_free_uid(start_uid=1001, max_uid=60000):
+    used = {u.pw_uid for u in pwd.getpwall()}
+    for uid in range(start_uid, max_uid):
+        if uid not in used:
+            return uid
+    raise Exception("Boş UID bulunamadı.")
 
 
 def apply_only_root_uid0(username=None, param=None):
-    """ CIS 5.4.2.1 Ensure root is the only UID 0 account """
+    """
+    CIS 5.4.2.1 – root dışında UID 0 olan tüm kullanıcıları düzeltir.
+    """
     try:
         param = param or {}
         start_uid = int(param.get("start_uid", 1001))
 
-        status, message = check_only_root_uid0()
+        status, msg = check_only_root_uid0()
         if status:
-            return True, f"Zaten uygun: {message}"
+            return True, f"Zaten uygun: {msg}"
 
-        logger.warning(f"UID 0 uygunsuz: {message} -> Düzeltiliyor...")
+        print(f"[WARN] Uygunsuz durum: {msg}")
 
-        if "Uygunsuz UID 0 kullanıcıları" in message:
-            users = message.split(": ", 1)[1].split(", ")
-            for user in users:
-                if user == "root":
-                    continue
+        # Uygunsuz kullanıcıları ayıklama islemi
+        others = msg.split(": ", 1)[1].split(", ")
+        others = [u for u in others if u != "root"]
 
-                new_uid = find_next_free_uid(start_uid)
+        for u in others:
+            print(f"[INFO] UID 0 kullanıcısı düzeltilecek: {u}")
 
-                run_command(["usermod", "-u", str(new_uid), user])
-                logger.info(f"{user} UID 0 -> {new_uid} olarak değiştirildi")
+            new_uid = find_next_free_uid(start_uid)
 
-                try:
-                    grp.getgrnam(user)
-                    run_command(["groupmod", "-g", str(new_uid), user])
-                    logger.info(f"{user} grubunun GID’si {new_uid} yapıldı")
-                except KeyError:
-                    logger.debug(f"{user} grubuna gerek yok (bulunamadı)")
+            print(f"[INFO] {u} için yeni UID: {new_uid}")
 
-                sync_sudoers(user)
+            # /etc/passwd içinde UID/GID düzeltme islemi
+            fix_uid_in_passwd(u, new_uid)
 
-                start_uid = new_uid + 1  
+            # Kullanıcıya ait dosyaları düzeltme islemi
+            os.system(f"find / -user {u} -exec chown -h {new_uid}:{new_uid} {{}} + 2>/dev/null")
 
-        status, message = check_only_root_uid0()
+            start_uid = new_uid + 1
+
+        status, msg = check_only_root_uid0()
         if status:
-            return True, "UID 0 sadece root’a ait olacak şekilde düzeltildi."
+            return True, "Düzeltildi: UID 0 sadece root’a ait."
         else:
-            return False, f"Ayar sonrası doğrulama başarısız: {message}"
+            return False, f"Düzeltme başarısız: {msg}"
 
     except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"apply_only_root_uid0 hata: {msg}")
-        return False, msg
+        return False, f"Hata: {e}"
 
 
+EXCLUDED = {"sync", "shutdown", "halt", "operator"}
 
 def check_only_root_gid0():
     """
-
-    Kontrol:
-    - UID root olan kullanıcı GID=0 olmalı
-    - root dışındaki kullanıcıların GID=0 olmaması gerekir
+    CIS 5.4.2.2 - Ensure root is the only GID 0 account
     """
+    bad = []
+
     try:
-        success, message = run_command([
-            "awk",
-            "-F:",
-            '($1 !~ /^(sync|shutdown|halt|operator)/ && $4=="0") {print $1":"$4}',
-            "/etc/passwd"
-        ])
+        with open(PASSWD, "r") as f:
+            for line in f:
+                if not line.strip():
+                    continue
 
-        if not success:
-            return False, f"Kontrol sırasında hata: {message}"
+                parts = line.split(":")
+                if len(parts) < 4:
+                    continue
 
-        lines = message.strip().splitlines()
-        if lines == ["root:0"]:
-            return True, "Sadece root kullanıcısı GID 0 kullanıyor."
-        else:
-            return False, f"GID 0 kullanan uygunsuz hesaplar bulundu: {', '.join(lines)}"
+                user = parts[0]
+                gid = parts[3]
+
+                if user in EXCLUDED:
+                    continue
+
+                if gid == "0" and user != "root":
+                    bad.append(f"{user}:0")
+
+        if not bad:
+            return True, "Sadece root GID=0 kullanıyor."
+
+        return False, f"Uygunsuz GID 0 kullanıcıları: {', '.join(bad)}"
+
     except Exception as e:
-        logger.error(f"check_only_root_gid0 hata: {e}")
-        return False, str(e)
+        return False, f"Kontrol hatası: {e}"
+
+
+def find_next_free_gid(start=1001, max_gid=60000):
+    """Sistemde kullanılmayan ilk boş GID'yi bulur."""
+    existing = set()
+
+    with open("/etc/group", "r") as g:
+        for line in g:
+            parts = line.split(":")
+            if len(parts) > 2 and parts[2].isdigit():
+                existing.add(int(parts[2]))
+
+    gid = start
+    while gid in existing:
+        gid += 1
+        if gid > max_gid:
+            raise Exception("Boş GID bulunamadı.")
+    return gid
 
 
 def apply_only_root_gid0(username=None, param=None):
     """
-    5.4.2.2 Ensure root is the only GID 0 account (CIS)
-
-    Root kullanıcısının GID'sini 0 yapar,
-    Root grubunu 0 yapar,
-    Root dışındaki kullanıcıları GID 0'dan çıkarır.
+    CIS 5.4.2.2 - Ensure root is the only GID 0 account
     """
-    try:
-        status, message = check_only_root_gid0()
-        if status:
-            return True, f"Uygun: {message}"
+    ok, message = check_only_root_gid0()
+    if ok:
+        return True, message
 
-        logger.info(f"Uygunsuz GID 0 hesapları bulundu -> {message}")
+    logger.warning("[WARN] Uygunsuz GID 0 kullanıcıları:", message)
 
-        run_command(["usermod", "-g", "0", "root"])
-        logger.info("Root kullanıcısının GID değeri 0 olarak ayarlandı.")
+    # Uygunsuz kullanıcıları listeden çıkarma islemi
+    bad_users = message.split(": ", 1)[1].split(", ")
+    bad_users = [x.split(":")[0] for x in bad_users]  
+    bad_users = [u for u in bad_users if u not in EXCLUDED and u != "root"]
 
-        run_command(["groupmod", "-g", "0", "root"])
-        logger.info("Root grubunun GID değeri 0 olarak ayarlandı.")
+    shutil.copy2(PASSWD, PASSWD + ".bak")
 
-        success, out = run_command([
-            "awk", "-F:", '($1 !~ /^(sync|shutdown|halt|operator|root)/ && $4=="0") {print $1}', "/etc/passwd"
-        ])
-        users = out.strip().splitlines()
+    # root'un GID'si ve root grubunun GID'si 0 olarak sabitleniyor
+    os.system("usermod -g 0 root >/dev/null 2>&1")
+    os.system("groupmod -g 0 root >/dev/null 2>&1")
 
-        if users:
-            for user in users:
+    # /etc/passwd düzenleme
+    new_lines = []
+    with open(PASSWD, "r") as f:
+        lines = f.readlines()
 
-                success, gids_out = run_command(["awk", "-F:", "{print $3}", "/etc/group"])
-                used_gids = set(map(int, gids_out.strip().splitlines()))
-                new_gid = 1001
-                while new_gid in used_gids:
-                    new_gid += 1
+    for line in lines:
+        user = line.split(":")[0]
 
-                run_command(["groupadd", "-g", str(new_gid), f"{user}_grp"])
-                # Kullanıcının GID'sini değiştir
-                run_command(["usermod", "-g", str(new_gid), user])
-                logger.info(f"Kullanıcı {user} için yeni GID oluşturuldu: {new_gid}")
+        if user in bad_users:
+            # Yeni GID atama
+            new_gid = find_next_free_gid()
+            parts = line.split(":")
+            parts[3] = str(new_gid)
+            new_line = ":".join(parts)
+            new_lines.append(new_line)
 
-        status, message = check_only_root_gid0()
-        if status:
-            return True, "Tüm uygunsuz GID 0 kullanıcıları düzeltildi."
+            # Kullanıcının dosyalarının grup sahipliğini güncelleme 
+            os.system(f"find / -group {user} -exec chgrp -h {new_gid} {{}} + 2>/dev/null")
+            print(f"[FIX] {user} için yeni GID atandı: {new_gid}")
+
         else:
-            return False, f"Düzeltme sonrası hâlâ uygunsuz kullanıcılar var: {message}"
+            new_lines.append(line)
 
-    except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"apply_only_root_gid0 hata: {msg}")
-        return False, msg
+    with open(PASSWD, "w") as f:
+        f.writelines(new_lines)
+
+    ok, message = check_only_root_gid0()
+    if ok:
+        return True, "Düzeltildi: GID 0 sadece root’a ait."
+    else:
+        return False, f"Düzeltme başarısız: {message}"
 
 
 
 
-def check_only_root_gid0():
+GROUP = "/etc/group"
+
+def check_only_root_group_gid0():
     """
-    5.4.2.3 Ensure group root is the only GID 0 group (Check)
-    Açıklama:
-        root grubu dışında GID=0 olan başka grup bulunmamalıdır.
+    CIS 5.4.2.3 – Ensure group root is the only GID 0 group
     """
+    bad_groups = []
+
     try:
-        cmd = ["awk", "-F:", '$3=="0"{print $1":"$3}', "/etc/group"]
-        success, output = run_command(cmd)
+        with open(GROUP, "r") as f:
+            for line in f:
+                if ":" not in line:
+                    continue
 
-        if not success:
-            logger.error(f"[CHECK][5.4.2.3] Komut çalıştırılamadı: {output}")
-            return False, output
+                parts = line.strip().split(":")
+                if len(parts) < 3:
+                    continue
 
-        lines = output.strip().split("\n") if output.strip() else []
-        if lines == ["root:0"]:
-            logger.info("[CHECK][5.4.2.3] Sadece root grubunun GID=0 olduğu doğrulandı.")
+                group, gid = parts[0], parts[2]
+
+                if gid == "0" and group != "root":
+                    bad_groups.append(f"{group}:0")
+
+        if not bad_groups:
             return True, "Sadece root grubunun GID=0 olduğu doğrulandı."
-        else:
-            logger.warning(f"[CHECK][5.4.2.3] GID=0 grubuna sahip başka gruplar bulundu: {lines}")
-            return False, f"GID=0 grubuna sahip başka gruplar bulundu: {lines}"
+
+        return False, f"GID=0 kullanan uygunsuz gruplar: {', '.join(bad_groups)}"
 
     except Exception as e:
-        logger.error(f"[CHECK][5.4.2.3] Hata: {e}")
-        return False, str(e)
+        return False, f"Hata: {e}"
+
+
+def find_next_free_group_gid(start=1001, max_gid=60000):
+    used = set()
+
+    with open("/etc/group") as f:
+        for line in f:
+            if ":" in line:
+                parts = line.split(":")
+                if len(parts) > 2 and parts[2].isdigit():
+                    used.add(int(parts[2]))
+
+    gid = start
+    while gid in used:
+        gid += 1
+        if gid > max_gid:
+            raise Exception("Boş GID bulunamadı.")
+    return gid
 
 
 def apply_only_root_group_gid0(username=None, param=None):
-    """
-    5.4.2.3 Ensure group root is the only GID 0 group (Apply)
-    Açıklama:
-        root grubunun GID’si 0 olacak şekilde düzeltilir.
-        Root dışındaki GID=0 grupları sadece loglanır, otomatik değiştirilmez.
-    """
-    try:
-        check_ok, check_msg = check_only_root_gid0()
-        if check_ok:
-            logger.info("[APPLY][5.4.2.3] Uyum zaten sağlanıyor, işlem yapılmadı.")
-            return True, "Uyum zaten sağlanıyor."
+    ok, msg = check_only_root_group_gid0()
+    if ok:
+        return True, msg
 
+    print("[WARN] Uygunsuz gruplar:", msg)
 
-        cmd = ["awk", "-F:", '$3=="0"{print $1}', "/etc/group"]
-        success, output = run_command(cmd)
-        if not success:
-            logger.error(f"[APPLY][5.4.2.3] Grup listesi alınamadı: {output}")
-            return False, output
+    bad_groups = msg.split(": ", 1)[1].split(", ")
+    bad_groups = [g.split(":")[0] for g in bad_groups]
 
-        groups = output.strip().split("\n") if output.strip() else []
-        log_groups = [grp for grp in groups if grp != "root"]
+    shutil.copy2(GROUP, GROUP + ".bak")
 
-        if log_groups:
-            logger.warning(f"[APPLY][5.4.2.3] Root dışındaki GID=0 gruplar (manuel inceleme gerekli): {log_groups}")
-            return False, f"Root dışındaki GID=0 gruplar: {log_groups}"
+    with open(GROUP, "r") as f:
+        lines = f.readlines()
 
+    new_lines = []
+    for line in lines:
+        parts = line.split(":")
+        if len(parts) < 3:
+            new_lines.append(line)
+            continue
 
-        cmd_root = ["groupmod", "-g", "0", "root"]
-        run_command(cmd_root)
-        logger.info("[APPLY][5.4.2.3] root grubunun GID’si 0 olarak ayarlandı.")
+        group = parts[0]
+        gid = parts[2].strip()
 
-        return True, "Sadece root grubunun GID=0 olduğu doğrulandı ve root güncellendi."
+        if group in bad_groups:
+            new_gid = find_next_free_group_gid()
+            print(f"[FIX] Grup: {group} → Yeni GID: {new_gid}")
+            parts[2] = str(new_gid)
+            new_lines.append(":".join(parts) + "\n")
 
-    except Exception as e:
-        msg = f"Hata: {str(e)}"
-        logger.error(f"[APPLY][5.4.2.3] Hata: {msg}")
-        return False, msg
+            os.system(f"find / -group {group} -exec chgrp -h {new_gid} {{}} + 2>/dev/null")
+
+        else:
+            new_lines.append(line)
+
+    with open(GROUP, "w") as f:
+        f.writelines(new_lines)
+
+    ok2, msg2 = check_only_root_group_gid0()
+    if ok2:
+        return True, "Düzeltildi: GID=0 sadece root grubunda."
+    return False, msg2
 
 
 
 def check_root_account_access():
     """
     5.4.2.4 Ensure root account access is controlled (Check)
-    Açıklama:
-        root kullanıcısının şifresi olmalı (P) veya hesap kilitli (L) olmalıdır.
+
+    CIS'e göre:
+      - root için passwd -S çıktısında ikinci alan:
+          P -> Password set (uygun)
+          L -> Account locked (uygun)
+          NP vb. -> Uygunsuz
     """
     try:
-        cmd = ["passwd", "-S", "root"]
-        success, output = run_command(cmd)
+        success, output = run_command(["passwd", "-S", "root"])
         if not success:
             logger.error(f"[CHECK][5.4.2.4] Komut çalıştırılamadı: {output}")
             return False, output
 
+        line = output.strip()
+        parts = line.split()
 
-        if any(status in output for status in [" P ", " L "]):
-            logger.info(f"[CHECK][5.4.2.4] Root hesabı güvenli: {output.strip()}")
-            return True, output.strip()
+        # Beklenen format: root <STATUS> ...
+        if len(parts) < 2:
+            logger.warning(f"[CHECK][5.4.2.4] Beklenmeyen passwd -S çıktısı: {line}")
+            return False, line
+
+        status = parts[1]  # P, L, NP, ...
+
+        if status in ("P", "L"):
+            logger.info(f"[CHECK][5.4.2.4] Root hesabı güvenli. Durum: {status} ({line})")
+            return True, line
         else:
-            logger.warning(f"[CHECK][5.4.2.4] Root hesabı kontrol dışı: {output.strip()}")
-            return False, output.strip()
+            logger.warning(f"[CHECK][5.4.2.4] Root hesabı kontrol dışı. Durum: {status} ({line})")
+            return False, line
 
     except Exception as e:
         logger.error(f"[CHECK][5.4.2.4] Hata: {e}")
@@ -968,222 +1038,218 @@ def check_root_account_access():
 def apply_root_account_access(username=None, param=None):
     """
     5.4.2.4 Ensure root account access is controlled (Apply)
-    Açıklama:
-        Root hesabı için şifre atanır veya hesap kilitlenir.
-    Parametre:
-        param (dict): {"action": "lock"|"set_password", "password": "<şifre>"}
+
+    Varsayılan davranış:
+      - param["action"] = "lock"  -> root hesabını kilitler (usermod -L root)
+      - param["action"] = "set_password", param["password"] -> root için şifre atar
+
+    NOT: run_command input parametresi desteklemediği için
+         chpasswd çağrısı bash -c ile echo pipelining ile yapılır.
     """
     try:
+        param = param or {}
+
         check_ok, check_msg = check_root_account_access()
         if check_ok:
             logger.info("[APPLY][5.4.2.4] Root hesabı zaten güvenli, işlem yapılmadı.")
             return True, "Root hesabı zaten güvenli."
 
-        action = param.get("action") if param else "lock"
+        action = param.get("action", "lock")
 
+        # root hesabını kilitleme islemi
         if action == "lock":
             success, out = run_command(["usermod", "-L", "root"])
-            if success:
-                logger.info("[APPLY][5.4.2.4] Root hesabı kilitlendi.")
-                return True, "Root hesabı kilitlendi."
-            else:
+            if not success:
                 logger.error(f"[APPLY][5.4.2.4] Root hesabı kilitlenemedi: {out}")
                 return False, out
 
+            logger.info("[APPLY][5.4.2.4] Root hesabı kilitlendi (usermod -L root).")
+
+        #root hesabına parola atama islemi
         elif action == "set_password":
             password = param.get("password")
             if not password:
                 logger.error("[APPLY][5.4.2.4] Yeni şifre belirtilmedi.")
                 return False, "Yeni şifre belirtilmedi."
 
+            safe_pw = password.replace("'", "'\"'\"'")
+            cmd = [
+                "bash",
+                "-c",
+                f"echo 'root:{safe_pw}' | chpasswd"
+            ]
 
-            success, out = run_command(["chpasswd"], input=f"root:{password}")
-            if success:
-                logger.info("[APPLY][5.4.2.4] Root şifresi başarıyla güncellendi.")
-                return True, "Root şifresi güncellendi."
-            else:
+            success, out = run_command(cmd)
+            if not success:
                 logger.error(f"[APPLY][5.4.2.4] Root şifresi güncellenemedi: {out}")
                 return False, out
 
+            logger.info("[APPLY][5.4.2.4] Root şifresi başarıyla güncellendi (chpasswd).")
+
         else:
-            logger.error(f"[APPLY][5.4.2.4] Geçersiz action parametresi: {action}")
-            return False, f"Geçersiz action parametresi: {action}"
+            msg = f"Geçersiz action parametresi: {action}"
+            logger.error(f"[APPLY][5.4.2.4] {msg}")
+            return False, msg
+
+        final_ok, final_msg = check_root_account_access()
+        if final_ok:
+            return True, f"Root hesabı güvenli hale getirildi. ({final_msg})"
+        else:
+            return False, f"İşlem sonrası root hesabı hâlâ uygunsuz görünüyor: {final_msg}"
 
     except Exception as e:
         logger.error(f"[APPLY][5.4.2.4] Hata: {e}")
         return False, str(e)
 
 
+
 def _get_root_path_env():
-    """sudo -Hiu root env çıktısından PATH değerini al (run_command uyumlu)."""
+    """Root PATH değerini güvenilir şekilde döndürür."""
+
     success, out = run_command(["sudo", "-Hiu", "root", "env"])
-    if not success:
-        return False, out, None
-    for line in out.splitlines():
-        if line.startswith("PATH="):
-            return True, None, line.split("=", 1)[1]
-    return False, "ROOT PATH env bulunamadı", None
+    if success:
+        for line in out.splitlines():
+            if line.startswith("PATH="):
+                return True, "", line.split("=", 1)[1]
+
+    # bash login shell üzerinden PATH alma islemi
+    success, out = run_command(["sudo", "-Hiu", "root", "bash", "-lc", "echo $PATH"])
+    if success and out.strip():
+        return True, "", out.strip()
+
+    try:
+        with open("/etc/environment", "r") as f:
+            for line in f:
+                if line.startswith("PATH="):
+                    return True, "", line.split("=", 1)[1].strip('"').strip()
+    except:
+        pass
+
+    return False, "Root PATH bulunamadı", None
+
 
 
 def check_root_path_integrity():
     """
-    CIS 5.4.2.5 - Check root PATH integrity.
-    Returns: (bool, details)  -> details: list of issues (if False) or success message (if True)
+    CIS 5.4.2.5 — Ensure root PATH integrity (CHECK)
+    CIS’in resmi denetim scripti birebir Python’a çevrilmiştir.
     """
-    try:
-        ok, err_or_msg, root_path = _get_root_path_env()
-        if not ok:
-            logger.error(f"[CHECK][5.4.2.5] PATH okunamadı: {err_or_msg}")
-            return False, f"PATH okunamadı: {err_or_msg}"
+    ok, err, root_path = _get_root_path_env()
+    if not ok:
+        return False, f"Root PATH alınamadı: {err}"
 
-        issues = []
-        rp = root_path.strip()
-        paths = rp.split(":")
+    rp = root_path.strip()
+    paths = rp.split(":")
 
-        # Boş (::) kontrolü
-        if "::" in rp:
-            issues.append("PATH içinde boş dizin (::) bulunuyor")
+    issues = []
 
-        # Trailing ':' kontrolü
-        if rp.endswith(":"):
-            issues.append("PATH ':' ile bitiyor (trailing colon)")
+    l_pmask = 0o022
+    l_maxperm = 0o777 & ~l_pmask
 
-        # Current directory (.) kontrolü
-        if any(p == "." for p in paths):
-            issues.append("PATH içinde current directory (.) bulunuyor")
+    if "::" in rp:
+        issues.append("PATH contains empty directory (::)")
 
-        # Her path elemanını kontrol et
-        for p in paths:
-            if p == "" or p == ".":
-                continue
+    if rp.endswith(":"):
+        issues.append("PATH contains trailing colon")
 
-            if not os.path.isabs(p):
-                issues.append(f"PATH içinde mutlak olmayan yol: '{p}'")
-            # stat ile izin ve sahiplik
-            success, stat_out = run_command(["stat", "-Lc", "%a %U %F", p])
-            if not success:
-                issues.append(f"'{p}' dizin değil veya erişilemiyor ({stat_out})")
-                continue
+    if re.search(r'(^|:)\.(?=:|$)', rp):
+        issues.append("PATH contains current directory (.)")
 
-            parts = stat_out.strip().split()
-            if len(parts) < 3:
-                issues.append(f"Stat çıktısı beklenenden farklı: '{p}' -> {stat_out}")
-                continue
+    for p in paths:
+        if not p:
+            continue
 
-            mode_str, owner, ftype = parts[0], parts[1], " ".join(parts[2:])
-            try:
-                mode = int(mode_str, 8)  # oktal biçiminde
-            except Exception:
-                issues.append(f"Stat izin parse edilemedi: '{p}' -> {mode_str}")
-                continue
+        if not os.path.isdir(p):
+            issues.append(f"'{p}' is not a directory")
+            continue
 
-            # ftype check: directory olmalı
-            ftype_l = ftype.lower()
-            if not ("directory" in ftype_l or "dizin" in ftype_l):
-                issues.append(f"'{p}' dizin değil (tip: {ftype})")
-                continue
+        success, out = run_command(["stat", "-Lc", "%#a %U", p])
+        if not success:
+            issues.append(f"Cannot stat '{p}': {out}")
+            continue
 
-            # sahiplik kontrolü
-            if owner != "root":
-                issues.append(f"Dizin '{p}' root kullanıcısına ait değil (owner={owner})")
+        mode_str, owner = out.split()
+        mode = int(mode_str, 8)
 
-            # izin kontrolü: daha izinli (more permissive) olmamalı; 0755'e kıyasla
-            # eğer (mode & ~0o755) != 0 => bazı izinler 0755'ten daha gevşek
-            if (mode & (~0o755)) != 0:
-                issues.append(f"Dizin '{p}' izinleri {oct(mode)}; 0755 veya daha kısıtlı olmalı")
+        if owner != "root":
+            issues.append(f"Directory '{p}' owner is '{owner}', must be 'root'")
 
-        if issues:
-            logger.warning(f"[CHECK][5.4.2.5] Root PATH hataları: {issues}")
-            return False, issues
+        if (mode & l_pmask) != 0:
+            issues.append(
+                f"Directory '{p}' mode {mode_str} too permissive; must be <= {oct(l_maxperm)}"
+            )
 
-        logger.info("[CHECK][5.4.2.5] Root PATH güvenli")
-        return True, "Root PATH güvenli"
+    if issues:
+        return False, issues
 
-    except Exception as e:
-        logger.error(f"[CHECK][5.4.2.5] Hata: {e}")
-        return False, str(e)
+    return True, "Root PATH is correctly configured"
+
 
 
 def apply_root_path_integrity(username=None, param=None):
     """
-    CIS 5.4.2.5 - Apply remediation where safe.
-
-    param: dict (optional)
-      - fix_mode: "repair" veya "remove"  (default "repair")
-        * "repair": mümkün olan düzeltmeleri uygular (chown/chmod)
-        * "remove": PATH içindeki tehlikeli öğeleri kaldırma önerisi döndürür (otomatik temizleme yapmaz)
-    Returns (bool, message_or_list)
+    CIS 5.4.2.5 – Ensure root PATH integrity (APPLY)
+    - Root PATH içindeki dizinlerin sahiplik ve izinlerini düzeltir
+    - PATH'in kendisini düzenlemez (CIS gereği)
     """
-    try:
-        param = param or {}
-        fix_mode = param.get("fix_mode", "repair")
+    param = param or {}
+    fix_mode = param.get("fix_mode", "repair")
 
-        check_ok, result = check_root_path_integrity()
-        if check_ok:
-            return True, result
+    ok, issues = check_root_path_integrity()
+    if ok:
+        return True, "Root PATH already secure."
 
-        issues = result if isinstance(result, list) else [result]
-        applied = []
-        manual = []
+    if not isinstance(issues, list):
+        issues = [issues]
 
-        ok, err_or_msg, root_path = _get_root_path_env()
-        if not ok:
-            return False, f"PATH okunamadı: {err_or_msg}"
-        rp = root_path.strip()
-        paths = rp.split(":")
+    applied = []
+    manual = []
 
-        for issue in issues:
-            low = issue.lower()
-            if "boş dizin" in low or "trailing" in low or "current directory" in low or "mutlak olmayan yol" in low:
-                manual.append(issue)
-            elif "dizin değil" in low:
-                manual.append(issue)
-            elif "root kullanıcısına ait değil" in low:
-                # issue form: "Dizin '... ' root kullanıcısına ait değil (owner=...)" -> extract between quotes
-                try:
-                    path = issue.split("'")[1]
-                except Exception:
-                    path = None
-                if path and fix_mode == "repair":
-                    s, out = run_command(["chown", "root:root", path])
-                    if s:
-                        applied.append(f"chown root:root {path}")
-                    else:
-                        manual.append(f"{issue} (chown başarısız: {out})")
-                else:
-                    manual.append(issue)
-            elif "izinleri" in low:
-                try:
-                    path = issue.split("'")[1]
-                except Exception:
-                    path = None
-                if path and fix_mode == "repair":
-                    s, out = run_command(["chmod", "0755", path])
-                    if s:
-                        applied.append(f"chmod 0755 {path}")
-                    else:
-                        manual.append(f"{issue} (chmod başarısız: {out})")
-                else:
-                    manual.append(issue)
+    ok, err, root_path = _get_root_path_env()
+    if not ok:
+        return False, f"Root PATH alınamadı: {err}"
+
+    rp = root_path.strip()
+    paths = rp.split(":")
+
+    l_pmask = 0o022
+    l_maxperm = 0o777 & ~l_pmask
+
+    for p in paths:
+        if not p or not os.path.isdir(p):
+            manual.append(f"Review PATH entry: {p}")
+            continue
+
+        success, out = run_command(["stat", "-Lc", "%#a %U", p])
+        if not success:
+            manual.append(f"Cannot stat '{p}'")
+            continue
+
+        mode_str, owner = out.split()
+        mode = int(mode_str, 8)
+
+        # Sahiplik düzeltme islemi
+        if owner != "root":
+            s, o = run_command(["chown", "root:root", p])
+            if s:
+                applied.append(f"chown root:root {p}")
             else:
-                manual.append(issue)
+                manual.append(f"Owner fix failed for {p}: {o}")
 
-        if fix_mode == "remove" and manual:
-            advice = [
-                "PATH temizliği için kontrol edilecek dosyalar: /etc/profile, /etc/environment, /root/.profile, /root/.bashrc, /etc/bash.bashrc",
-                "Bu dosyalarda PATH ayarlarını manuel olarak düzenleyin (tehlikeli girdileri kaldırın)."
-            ]
-            return False, {"applied": applied, "manual_actions_required": manual, "advice": advice}
+        # İzin düzeltme islemi
+        if (mode & l_pmask) != 0:
+            s, o = run_command(["chmod", "0755", p])
+            if s:
+                applied.append(f"chmod 0755 {p}")
+            else:
+                manual.append(f"Mode fix failed for {p}: {o}")
 
-        final_ok, final_res = check_root_path_integrity()
-        if final_ok:
-            return True, {"applied": applied, "manual_actions_required": manual}
-        else:
-            return False, {"applied": applied, "manual_actions_required": manual, "final_check": final_res}
+    final_ok, final_issues = check_root_path_integrity()
+    if final_ok:
+        return True, {"applied": applied, "manual": manual}
 
-    except Exception as e:
-        logger.error(f"[APPLY][5.4.2.5] Hata: {e}")
-        return False, str(e)
+    return False, {"applied": applied, "manual": manual, "final_issues": final_issues}
+
 
 
 

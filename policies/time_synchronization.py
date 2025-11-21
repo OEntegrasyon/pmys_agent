@@ -263,7 +263,7 @@ def check_chrony_authorized_timeserver(param=None):
                     for srv in expected_servers:
                         if stripped.lower().startswith(("server", "pool")) and srv.lower() in stripped.lower():
                             found[srv] = True
-                            logger.info(f"Bulundu: {srv} (dosya: {f})")
+                            # logger.info(f"Bulundu: {srv} (dosya: {f})")           //for icinde uzun log basıyordu. istenirse acilabilir.
         except FileNotFoundError:
             continue
 
@@ -406,36 +406,60 @@ def apply_chrony_running_as_chrony(username=None, param=None):
 
 
 
+def is_other_timesync_active():
+    """systemd-timesyncd veya ntp çalışıyor mu?"""
+    services = ["systemd-timesyncd", "ntp", "openntpd"]
+    for svc in services:
+        ok, out = run_command(["systemctl", "is-active", svc])
+        if ok and out.strip() == "active":
+            return True, svc
+    return False, None
+
+
+def is_chrony_installed():
+    ok, out = run_command(["dpkg", "-s", "chrony"])
+    return ok and "Status: install ok installed" in out
+
+
 def check_timesync_service():
-    """
-    CIS 2.3.3.3 - Ensure chrony is enabled and running
-    """
     ok1, out1 = run_command(["systemctl", "is-enabled", "chrony.service"])
     ok2, out2 = run_command(["systemctl", "is-active", "chrony.service"])
 
     if out1.strip() == "enabled" and out2.strip() == "active":
-        logger.info("[CIS 2.3.3.3][CHECK] chrony servisi etkin ve çalışıyor.")
-        return True, "chrony servisi etkin ve çalışıyor."
+        logger.info("[CIS 2.3.3.3][CHECK] chrony etkin ve çalışıyor.")
+        return True, "chrony etkin ve çalışıyor."
     else:
         logger.warning(f"[CIS 2.3.3.3][CHECK] chrony uygun değil (enabled={out1}, active={out2})")
-        return False, "chrony servisi etkin değil veya çalışmıyor."
+        return False, "chrony etkin değil veya çalışmıyor."
 
 
 def apply_timesync_service(username=None, param=None):
     """
     CIS 2.3.3.3 - Ensure chrony is enabled and running
     """
-    ok, msg = check_timesync_service()
-    if ok:
-        return True, msg
 
+    # Eğer başka zaman senkronizasyon servisi aktifse chrony kaldırılmalı
+    other_active, svc = is_other_timesync_active()
+    if other_active:
+        logger.warning(f"[CIS 2.3.3.3][APPLY] {svc} aktif, CIS gereği chrony kaldırılıyor.")
+        run_command(["apt", "-y", "purge", "chrony"])
+        run_command(["apt", "-y", "autoremove"])
+        return True, f"{svc} aktif olduğu için chrony kaldırıldı."
+
+    if not is_chrony_installed():
+        logger.info("[CIS 2.3.3.3][APPLY] chrony kurulu değil, kuruluyor...")
+        run_command(["apt", "-y", "install", "chrony"])
+
+    # Servisi etkin ve çalışır hale getir
     try:
         run_command(["systemctl", "unmask", "chrony.service"])
         run_command(["systemctl", "--now", "enable", "chrony.service"])
+
         ok, msg = check_timesync_service()
         if ok:
-            return True, "chrony servisi etkinleştirildi ve başlatıldı."
+            return True, "chrony servisi etkinleştirildi."
         else:
             return False, "chrony servisi başlatılamadı."
+
     except Exception as e:
         return False, f"Hata: {e}"
