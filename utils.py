@@ -5,7 +5,7 @@ from logger import logger
 from configparser import ConfigParser
 import sys, glob, pwd, grp
 import netifaces
-
+import time
 
 def get_base_path():
     if getattr(sys, 'frozen', False):
@@ -82,31 +82,47 @@ def get_desktop_env():
 
 def get_logged_in_user(detailed=None):
     try:
-        output = subprocess.check_output("loginctl list-sessions --no-legend", shell=True).decode().strip()
+        output = subprocess.check_output(
+            "loginctl list-sessions --no-legend", 
+            shell=True, 
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+        
         for line in output.splitlines():
             parts = line.split()
             if len(parts) >= 4: 
                 session_id, uid, user, seat = parts[0], parts[1], parts[2], parts[3]
 
-                is_active = subprocess.check_output(
-                    ["loginctl", "show-session", str(session_id), "-p", "Active", "--value"],
-                    text=True
-                ).strip()
+                try:
+                    is_active = subprocess.check_output(
+                        ["loginctl", "show-session", str(session_id), "-p", "Active", "--value"],
+                        text=True,
+                        stderr=subprocess.DEVNULL
+                    ).strip()
+                except subprocess.CalledProcessError:
+                    continue
 
-                if is_active == "yes" and user not in ["root", "lightdm", "sddm"] and seat != "-":
+                if is_active == "yes" and user not in ["root", "lightdm", "sddm", "gdm"] and seat != "-":
                     
                     if detailed:
-                        display = subprocess.check_output(
-                            ["loginctl", "show-session", str(session_id), "-p", "Display", "--value"],
-                            text=True
-                        ).strip()
-                        dbus = f"unix:path=/run/user/{uid}/bus"
-                        return (uid, user, display, dbus)
+                        try:
+                            display = subprocess.check_output(
+                                ["loginctl", "show-session", str(session_id), "-p", "Display", "--value"],
+                                text=True,
+                                stderr=subprocess.DEVNULL
+                            ).strip()
+
+                            dbus = f"unix:path=/run/user/{uid}/bus"
+                            return (uid, user, display, dbus)
+                        except:
+                            return (None, None, None, None)
                     else:
                         return user
               
+    except subprocess.CalledProcessError:
+        return None
     except Exception as e:
-        logger.error(f"[get_logged_in_user] Hata: {str(e)}")
+        logger.error(f"[get_logged_in_user] Beklenmedik Hata: {str(e)}")
     
     return None if not detailed else (None, None, None, None)
 
@@ -186,20 +202,52 @@ def first_time_register(conn_params):
         return None
 
 def send_response(action, details):
-    response = {"action": action, "details": details}
-    logger.info(f"[send_response] Gönderilen mesaj: {json.dumps(response)}")
+    """
+    Log mesajını RabbitMQ'ya gönderir.
+    Bağlantı hatası olursa 3 kez tekrar dener (Retry Mechanism).
+    """
     uuid, conn_params, config, config_file = get_connection_parameters()
-    connection = pika.BlockingConnection(conn_params)
-    channel = connection.channel()
-    channel.queue_declare(queue='client_policy_log', durable=True)
+    
+    response = {"action": action, "details": details}
+    msg_body = json.dumps(response)
+    
+    max_retries = 3
+    retry_delay = 1 
 
-    channel.basic_publish(
-        exchange='',
-        routing_key='client_policy_log',
-        body=json.dumps(response),
-        properties=pika.BasicProperties(delivery_mode=2)
-    )
-    connection.close()
+    for attempt in range(1, max_retries + 1):
+        connection = None
+        try:
+            connection = pika.BlockingConnection(conn_params)
+            channel = connection.channel()
+            
+            channel.queue_declare(queue='client_policy_log', durable=True)
+
+            channel.basic_publish(
+                exchange='',
+                routing_key='client_policy_log',
+                body=msg_body,
+                properties=pika.BasicProperties(
+                    delivery_mode=2, 
+                    content_type='application/json'
+                )
+            )
+            
+            logger.info(f"[send_response] Log başarıyla gönderildi: {action}")
+            return 
+
+        except Exception as e:
+            logger.warning(f"[send_response] Gönderim hatası (Deneme {attempt}/{max_retries}): {e}")
+            if attempt < max_retries:
+                time.sleep(retry_delay) 
+            else:
+                logger.error(f"[send_response] Log gönderimi tamamen BAŞARISIZ oldu: {msg_body}")
+        
+        finally:
+            if connection and connection.is_open:
+                try:
+                    connection.close()
+                except:
+                    pass
 
 
     

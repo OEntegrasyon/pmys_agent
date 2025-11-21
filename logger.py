@@ -29,4 +29,3 @@ class Logger:
         return self.logger
 
 logger = Logger().get_logger()
-#singleton yapmaya çalıştım, olur inş

@@ -14,7 +14,7 @@ MODULES_TO_RE_ENABLE = [
     "jffs2",
     "squashfs",
     "udf",
-    "usb-storage"
+    "usb_storage"
 ]
 
 def revert_disabled_modules():
@@ -26,7 +26,7 @@ def revert_disabled_modules():
     
     for module_name in MODULES_TO_RE_ENABLE:
         # CIS politikasının oluşturduğu dosyanın tam yolu
-        rule_path = f"/etc/modprobe.d/{module_name}-blacklist.conf"
+        rule_path = f"/etc/modprobe.d/{module_name}-cis-blacklist.conf"
         
         try:
             # Eğer bu dosya varsa, CIS politikası uygulanmış demektir.

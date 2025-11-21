@@ -41,16 +41,21 @@ def login_detection(conn_params, uuid):
 
 def on_policy_received(channel, method, properties, body):
     user = get_logged_in_user()
-    data = json.loads(body)
+    
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        logger.error("Hatalı JSON formatı, mesaj işlenemedi.")
+        channel.basic_ack(delivery_tag=method.delivery_tag)
+        return
 
     try:
         username = data.get("username")
         client_uuid = data.get("client_uuid") 
 
-        if username and username != user:
-            logger.warning(f"Politika uyuşmazlığı. Beklenen: '{user}', Gelen: '{username}'. Atlanıyor.")
-            channel.basic_ack(delivery_tag=method.delivery_tag)
-            return
+        if username and user and username != user:
+            logger.warning(f"Politika uyuşmazlığı. Beklenen (Yerel): '{user}', Gelen (Sunucu): '{username}'. Atlanıyor.")
+            return 
 
         policy_data = data.get("policies", {})
         user_policies = policy_data.get("user", [])
@@ -59,11 +64,12 @@ def on_policy_received(channel, method, properties, body):
         final_policies = {}
         policy_source = {} 
 
-        for policy in user_policies:
-            policy_type = policy.get("policy_type__name")
-            if policy_type:
-                final_policies[policy_type] = policy
-                policy_source[policy_type] = "user" 
+        if username:
+            for policy in user_policies:
+                policy_type = policy.get("policy_type__name")
+                if policy_type:
+                    final_policies[policy_type] = policy
+                    policy_source[policy_type] = "user" 
 
         for policy in client_policies:
             policy_type = policy.get("policy_type__name")
@@ -80,12 +86,14 @@ def on_policy_received(channel, method, properties, body):
 
             logger.info(f"[on_policy_received] Politika (Kaynak: {source}) uygulanıyor: {policy_type}, Parametreler: {policy_parameters}")
 
-            success, result_msg = apply_policy(username, policy_type, policy_parameters)
+            target_user = username if username else user
+            
+            success, result_msg = apply_policy(target_user, policy_type, policy_parameters)
 
             action = "policy_applied" if success else "policy_failed"
 
             details = {
-                "username": user, 
+                "username": target_user, 
                 "policy_type": policy_type, 
                 "parameters": policy_parameters, 
                 "message": result_msg,
@@ -97,8 +105,14 @@ def on_policy_received(channel, method, properties, body):
             if not success:
                 logger.error(f"[on_policy_received] Politika uygulanamadı: {policy_type}, Hata: {result_msg}")
 
+    except Exception as e:
+        logger.error(f"[on_policy_received] Genel Hata: {e}")
+        
     finally:
-        channel.basic_ack(delivery_tag=method.delivery_tag)
+        try:
+            channel.basic_ack(delivery_tag=method.delivery_tag)
+        except Exception as ack_error:
+            logger.warning(f"Ack gönderilemedi (Bağlantı zaten kapanmış veya mesaj önceden onaylanmış olabilir): {ack_error}")
 
 def apply_policy(username, policy_type, parameters):
     policy_function = getattr(policies, policy_type, None)

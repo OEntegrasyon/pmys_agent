@@ -109,7 +109,7 @@ def apply_module_disabled(original_module_name: str, module_name_for_rules: str)
             if not success_unload:
 
                 print(f"Uyarı: '{module_name_for_rules}' modülü kaldırılamadı (muhtemelen kullanımda): {out_unload}")
-                return False, f"'{module_name_for_rules}' modülü kaldırılamadı (kullanımda olabilir). Kurallar yazıldı ancak modül hala yüklü."
+                return False, f"'{module_name_for_rules}' modülü kaldırılamadı (kullanımda olabilir). Kurallar yazıldı ancak modül hala yüklü. Yeniden başaltma gerekebilir."
 
         return True, f"{original_module_name} modülü başarıyla devre dışı bırakıldı ve kurallar uygulandı."
     

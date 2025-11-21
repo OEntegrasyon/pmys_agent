@@ -23,8 +23,7 @@ def revert_disabled_network_modules():
     reverted_count = 0
     
     for module_name in MODULES_TO_RE_ENABLE:
-        rule_path = f"/etc/modprobe.d/{module_name}-blacklist.conf"
-        
+        rule_path = f"/etc/modprobe.d/{module_name}-blacklist.conf"        
         try:
             if os.path.exists(rule_path):
                 logger.info(f"[DEFAULT] '{module_name}' ağ modülü için engelleme kuralı kaldırılıyor...")
