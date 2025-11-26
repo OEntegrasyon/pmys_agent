@@ -324,7 +324,9 @@ def check_pam_faillock_enabled():
 def apply_pam_faillock(username=None, param=None):
     """
     CIS 5.3.2.2 - Ensure pam_faillock module is enabled
-    Debian/Pardus uyumlu pam-config profilleri oluşturur ve etkinleştirir.
+
+    Debian/Pardus uyumlu pam-config profilleri oluşturur, faillock.conf'u ayarlar ve etkinleştirir.
+
     """
     logger.warning("TEST: apply_pam_faillock fonksiyonu ÇALIŞTI!")
 
@@ -332,8 +334,19 @@ def apply_pam_faillock(username=None, param=None):
         is_enabled, msg = check_pam_faillock_enabled()
         if is_enabled:
             return True, f"Değişiklik gerekmedi: {msg}"
-        logger.warning("TEST: apply_pam_faillock fonksiyonu ÇALIŞTI!")
-        logger.info("[PAM Faillock][APPLY] faillock profilleri oluşturuluyor...")
+
+        logger.info("[PAM Faillock][APPLY] faillock yapılandırması başlatılıyor...")
+
+        # faillock.conf dosyasını oluşturma
+        faillock_conf_content = (
+            "deny = 5\n"
+            "unlock_time = 900\n"
+            "silent\n"
+        )
+
+        with open("/etc/security/faillock.conf", "w", encoding="utf-8") as f:
+            f.write(faillock_conf_content)
+        logger.info("[PAM Faillock][APPLY] /etc/security/faillock.conf oluşturuldu.")
 
 
         faillock_profile = (
@@ -342,7 +355,7 @@ def apply_pam_faillock(username=None, param=None):
             "Priority: 0\n"
             "Auth-Type: Primary\n"
             "Auth:\n"
-            "    [default=die] pam_faillock.so authfail\n"
+            " \t[default=die] pam_faillock.so authfail\n"
         )
 
         with open("/usr/share/pam-configs/faillock", "w", encoding="utf-8") as f:
@@ -355,10 +368,10 @@ def apply_pam_faillock(username=None, param=None):
             "Priority: 1024\n"
             "Auth-Type: Primary\n"
             "Auth:\n"
-            "    requisite pam_faillock.so preauth\n"
+            " \trequisite pam_faillock.so preauth\n"
             "Account-Type: Primary\n"
             "Account:\n"
-            "    required pam_faillock.so\n"
+            " \trequired pam_faillock.so\n"
         )
 
         with open("/usr/share/pam-configs/faillock_notify", "w", encoding="utf-8") as f:
@@ -370,7 +383,7 @@ def apply_pam_faillock(username=None, param=None):
         if not os.path.exists("/usr/share/pam-configs/faillock_notify"):
             return False, "faillock_notify dosyası oluşturulamadı!"
 
-        logger.info("[PAM Faillock][APPLY] faillock profilleri oluşturuldu. pam-auth-update çalıştırılıyor...")
+        logger.info("[PAM Faillock][APPLY] PAM profilleri oluşturuldu. pam-auth-update çalıştırılıyor...")
 
 
         success, output = run_command(["pam-auth-update", "--enable", "faillock"])
@@ -395,6 +408,63 @@ def apply_pam_faillock(username=None, param=None):
 
 
 
+def disable_pam_faillock(username=None, param=None):
+    """
+    CIS 5.3.2.2 - Revert faillock configuration
+    Tüm faillock yapılandırmasını eksiksiz geri alır.
+    """
+    logger.info("[PAM Faillock][REVERT] Geri alma işlemi başlatılıyor...")
+
+    try:
+        # PAM profillerini devre dışı bırakır
+        run_command(["pam-auth-update", "--remove", "faillock"])
+        run_command(["pam-auth-update", "--remove", "faillock_notify"])
+
+        # Profil dosyalarını siler
+        for fpath in [
+            "/usr/share/pam-configs/faillock",
+            "/usr/share/pam-configs/faillock_notify",
+            "/etc/security/faillock.conf",
+        ]:
+            if os.path.exists(fpath):
+                os.remove(fpath)
+                logger.info(f"[PAM Faillock][REVERT] Silindi: {fpath}")
+
+        # PAM dosyalarındaki faillock satırlarını temizler
+        pam_files = ["/etc/pam.d/common-auth", "/etc/pam.d/common-account"]
+
+        faillock_pattern = re.compile(r".*pam_faillock\.so.*")
+
+        for pfile in pam_files:
+            if not os.path.exists(pfile):
+                continue
+
+            with open(pfile, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            new_lines = [ln for ln in lines if not faillock_pattern.search(ln)]
+
+            with open(pfile, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+
+            logger.info(f"[PAM Faillock][REVERT] {pfile} içindeki faillock satırları temizlendi.")
+
+        ok, out = run_command([
+            "grep", "-P", r"\bpam_faillock\.so\b",
+            "/etc/pam.d/common-auth",
+            "/etc/pam.d/common-account"
+        ])
+
+        if ok and out.strip():
+            logger.warning("[PAM Faillock][REVERT] UYARI: Hâlâ faillock satırları kalmış olabilir!")
+            return False, f"Kalıntılar tespit edildi:\n{out}"
+
+        logger.info("[PAM Faillock][REVERT] Revert işlemi başarıyla tamamlandı.")
+        return True, "pam_faillock tamamen devre dışı bırakıldı."
+
+    except Exception as e:
+        logger.error(f"[PAM Faillock][REVERT] Hata: {e}")
+        return False, f"Hata: {e}"
 
 
 
@@ -2123,95 +2193,95 @@ def apply_pam_unix_use_authtok(username=None, param=None):
 
 
 
-def check_pam_faillock():
-    """
-    CIS 5.3.3.x - Ensure failed login attempts are centraly logged and locked.
-    Checks for pam_faillock.so usage in /etc/pam.d/common-auth.
-    """
-    path = "/etc/pam.d/common-auth"
-    required_auth_param = "preauth"
-    required_fail_param = "authfail"
-    required_account_param = "account"
+# def check_pam_faillock():
+#     """
+#     CIS 5.3.3.x - Ensure failed login attempts are centraly logged and locked.
+#     Checks for pam_faillock.so usage in /etc/pam.d/common-auth.
+#     """
+#     path = "/etc/pam.d/common-auth"
+#     required_auth_param = "preauth"
+#     required_fail_param = "authfail"
+#     required_account_param = "account"
     
-    auth_faillock_found = False
-    fail_faillock_found = False
-    account_faillock_found = False
+#     auth_faillock_found = False
+#     fail_faillock_found = False
+#     account_faillock_found = False
     
-    logger.info(f"[PAM Faillock][CHECK] Kontrol ediliyor: {path}")
+#     logger.info(f"[PAM Faillock][CHECK] Kontrol ediliyor: {path}")
 
-    if not os.path.exists(path):
-        msg = f"PAM yapılandırma dosyası ({path}) bulunamadı."
-        logger.error(f"[PAM Faillock][CHECK] {msg}")
-        return False, msg
+#     if not os.path.exists(path):
+#         msg = f"PAM yapılandırma dosyası ({path}) bulunamadı."
+#         logger.error(f"[PAM Faillock][CHECK] {msg}")
+#         return False, msg
 
-    try:
-        with open(path, "r") as f:
-            for line in f:
-                line_stripped = line.strip()
-                if line_stripped.startswith("#") or not line_stripped:
-                    continue
+#     try:
+#         with open(path, "r") as f:
+#             for line in f:
+#                 line_stripped = line.strip()
+#                 if line_stripped.startswith("#") or not line_stripped:
+#                     continue
                 
-                parts = line_stripped.split()
-                if len(parts) < 3:
-                    continue
+#                 parts = line_stripped.split()
+#                 if len(parts) < 3:
+#                     continue
 
-                if parts[0] == "auth" and "pam_faillock.so" in parts[2]:
-                    if required_auth_param in line_stripped:
-                        auth_faillock_found = True
-                    if required_fail_param in line_stripped:
-                        fail_faillock_found = True
+#                 if parts[0] == "auth" and "pam_faillock.so" in parts[2]:
+#                     if required_auth_param in line_stripped:
+#                         auth_faillock_found = True
+#                     if required_fail_param in line_stripped:
+#                         fail_faillock_found = True
                         
-                elif parts[0] == "account" and "pam_faillock.so" in parts[2]:
-                    account_faillock_found = True
+#                 elif parts[0] == "account" and "pam_faillock.so" in parts[2]:
+#                     account_faillock_found = True
 
-        if not auth_faillock_found:
-            return False, f"'auth required pam_faillock.so {required_auth_param}' satırı bulunamadı."
+#         if not auth_faillock_found:
+#             return False, f"'auth required pam_faillock.so {required_auth_param}' satırı bulunamadı."
         
-        if not fail_faillock_found:
-            return False, f"'auth [default=die] pam_faillock.so {required_fail_param}' satırı bulunamadı."
+#         if not fail_faillock_found:
+#             return False, f"'auth [default=die] pam_faillock.so {required_fail_param}' satırı bulunamadı."
 
-        if not account_faillock_found:
-            return False, f"'account required pam_faillock.so' satırı bulunamadı."
+#         if not account_faillock_found:
+#             return False, f"'account required pam_faillock.so' satırı bulunamadı."
 
-        msg = "pam_faillock.so her üç aşamada da doğru şekilde yapılandırılmış."
-        logger.info(f"[PAM Faillock][CHECK] {msg}")
-        return True, msg
+#         msg = "pam_faillock.so her üç aşamada da doğru şekilde yapılandırılmış."
+#         logger.info(f"[PAM Faillock][CHECK] {msg}")
+#         return True, msg
 
-    except PermissionError:
-        msg = f"Yetki hatası: {path} dosyası okunamıyor. Root yetkisi gerekli."
-        logger.error(f"[PAM Faillock][CHECK] {msg}")
-        return False, msg
-    except Exception as e:
-        msg = f"Kontrol sırasında beklenmedik hata: {str(e)}"
-        logger.error(f"[PAM Faillock][CHECK] {msg}")
-        return False, msg
+#     except PermissionError:
+#         msg = f"Yetki hatası: {path} dosyası okunamıyor. Root yetkisi gerekli."
+#         logger.error(f"[PAM Faillock][CHECK] {msg}")
+#         return False, msg
+#     except Exception as e:
+#         msg = f"Kontrol sırasında beklenmedik hata: {str(e)}"
+#         logger.error(f"[PAM Faillock][CHECK] {msg}")
+#         return False, msg
 
 
-def apply_pam_faillock(username=None, param=None):
-    """
-    Ensures pam_faillock is enabled via pam-auth-update for central logging.
-    """
-    PROFILE_NAME = "faillock" # Debian/Ubuntu'da faillock profil adı
+# def apply_pam_faillock(username=None, param=None):
+#     """
+#     Ensures pam_faillock is enabled via pam-auth-update for central logging.
+#     """
+#     PROFILE_NAME = "faillock" # Debian/Ubuntu'da faillock profil adı
 
-    success, message = check_pam_faillock()
-    if success:
-        return True, f"Değişiklik gerekmedi: {message}"
+#     success, message = check_pam_faillock()
+#     if success:
+#         return True, f"Değişiklik gerekmedi: {message}"
 
-    try:
-        # pam-auth-update aracılığıyla faillock profilini etkinleştir
-        logger.info(f"[PAM Faillock][APPLY] '{PROFILE_NAME}' PAM profili etkinleştiriliyor...")
-        success_update, output_update = run_command(["pam-auth-update", "--enable", PROFILE_NAME])
+#     try:
+#         pam-auth-update aracılığıyla faillock profilini etkinleştir
+#         logger.info(f"[PAM Faillock][APPLY] '{PROFILE_NAME}' PAM profili etkinleştiriliyor...")
+#         success_update, output_update = run_command(["pam-auth-update", "--enable", PROFILE_NAME])
         
-        if not success_update:
-            msg = f"pam-auth-update ile '{PROFILE_NAME}' etkinleştirilemedi: {output_update}"
-            logger.error(f"[PAM Faillock][APPLY] HATA: {msg}")
-            return False, msg
+#         if not success_update:
+#             msg = f"pam-auth-update ile '{PROFILE_NAME}' etkinleştirilemedi: {output_update}"
+#             logger.error(f"[PAM Faillock][APPLY] HATA: {msg}")
+#             return False, msg
 
-        # Not: pam-auth-update, yapılandırmayı otomatik olarak yeniden yükler.
+#         Not: pam-auth-update, yapılandırmayı otomatik olarak yeniden yükler.
         
-        return True, f"'{PROFILE_NAME}' PAM profili başarıyla etkinleştirildi. Tüm başarısız girişler artık loglanacak ve kilitlenecek."
+#         return True, f"'{PROFILE_NAME}' PAM profili başarıyla etkinleştirildi. Tüm başarısız girişler artık loglanacak ve kilitlenecek."
 
-    except Exception as e:
-        msg = f"Uygulama sırasında beklenmedik hata: {str(e)}"
-        logger.error(f"[PAM Faillock][APPLY] HATA: {msg}")
-        return False, msg
+#     except Exception as e:
+#         msg = f"Uygulama sırasında beklenmedik hata: {str(e)}"
+#         logger.error(f"[PAM Faillock][APPLY] HATA: {msg}")
+#         return False, msg

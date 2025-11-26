@@ -122,6 +122,7 @@ from .pam import (
     apply_libpam_pwquality,
     apply_pam_unix_enabled,
     apply_pam_faillock,
+    disable_pam_faillock,
     apply_pam_pwquality,
     apply_pwhistory,
     apply_failed_attempts_lockout,
