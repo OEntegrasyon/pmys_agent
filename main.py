@@ -61,28 +61,35 @@ def on_policy_received(channel, method, properties, body):
         user_policies = policy_data.get("user", [])
         client_policies = policy_data.get("client", [])
 
-        final_policies = {}
-        policy_source = {} 
+        final_policies_list = []
 
         if username:
             for policy in user_policies:
                 policy_type = policy.get("policy_type__name")
                 if policy_type:
-                    final_policies[policy_type] = policy
-                    policy_source[policy_type] = "user" 
+                    final_policies_list.append({
+                        "type": policy_type,
+                        "policy": policy,
+                        "source": "user"
+                    })
 
         for policy in client_policies:
             policy_type = policy.get("policy_type__name")
             if policy_type:
-                logger.info(f"İstemci politikası '{policy_type}' öncelik kazanıyor.")
-                final_policies[policy_type] = policy
-                policy_source[policy_type] = "client" 
+                final_policies_list.append({
+                    "type": policy_type,
+                    "policy": policy,
+                    "source": "client"
+                })
 
-        logger.info(f"Uygulanacak {len(final_policies)} adet nihai politika mevcut.")
+        logger.info(f"Uygulanacak {len(final_policies_list)} adet nihai politika mevcut.")
 
-        for policy_type, policy in final_policies.items(): 
+        for item in final_policies_list: 
+            policy_type = item["type"]
+            policy = item["policy"]
+            source = item["source"]
+            
             policy_parameters = policy.get("parameters", {})
-            source = policy_source.get(policy_type, "unknown") 
 
             logger.info(f"[on_policy_received] Politika (Kaynak: {source}) uygulanıyor: {policy_type}, Parametreler: {policy_parameters}")
 
@@ -112,7 +119,7 @@ def on_policy_received(channel, method, properties, body):
         try:
             channel.basic_ack(delivery_tag=method.delivery_tag)
         except Exception as ack_error:
-            logger.warning(f"Ack gönderilemedi (Bağlantı zaten kapanmış veya mesaj önceden onaylanmış olabilir): {ack_error}")
+            logger.warning(f"Ack gönderilemedi: {ack_error}")
 
 def apply_policy(username, policy_type, parameters):
     policy_function = getattr(policies, policy_type, None)
