@@ -274,197 +274,179 @@ def apply_pam_unix_enabled(username=None, param=None):
     
 
 
-# def check_pam_faillock_enabled():
-#     """
-#     CIS 5.3.2.2 – Ensure pam_faillock module is enabled
-#     CIS’in resmi audit regex’leri ile kontrol eder:
-#         1) auth requisite pam_faillock.so preauth
-#         2) auth [default=die] pam_faillock.so authfail
-#         3) account required pam_faillock.so
-#     """
-#     try:
-#         checks = {
-#             "preauth":  r'^\h*auth\h+requisite\h+pam_faillock\.so\h+preauth\b',
-#             "authfail": r'^\h*auth\h+\[default=die\]\h+pam_faillock\.so\h+authfail\b',
-#             "account":  r'^\h*account\h+required\h+pam_faillock\.so\b',
-#         }
+def check_pam_faillock_enabled():
+    """
+    CIS 5.3.2.2 – Ensure pam_faillock module is enabled
+    Kontroller:
+      1) common-auth içinde 'auth ... requisite ... pam_faillock.so ... preauth'
+      2) common-auth içinde 'auth ... [default=die] ... pam_faillock.so ... authfail'
+      3) common-account içinde 'account ... required ... pam_faillock.so'
+    """
+    logger.info("[CIS 5.3.2.2][CHECK] PAM faillock modülü kontrol ediliyor...")
 
-#         results = {k: False for k in checks.keys()}
+    try:
+        
+        checks = {
+            "preauth": {
+                "file": "/etc/pam.d/common-auth",
+                "regex": r'^\s*auth\s+requisite\s+pam_faillock\.so\s+preauth'
+            },
+            "authfail": {
+                "file": "/etc/pam.d/common-auth",
+                "regex": r'^\s*auth\s+\[default=die\]\s+pam_faillock\.so\s+authfail'
+            },
+            "account": {
+                "file": "/etc/pam.d/common-account",
+                "regex": r'^\s*account\s+required\s+pam_faillock\.so'
+            }
+        }
 
-#         # common-auth kontrolü
-#         ok1, out1 = run_command(["grep", "-PH", checks["preauth"], "/etc/pam.d/common-auth"])
-#         if ok1 and out1.strip():
-#             results["preauth"] = True
+        results = {k: False for k in checks.keys()}
+        missing_items = []
 
-#         ok2, out2 = run_command(["grep", "-PH", checks["authfail"], "/etc/pam.d/common-auth"])
-#         if ok2 and out2.strip():
-#             results["authfail"] = True
+        for key, data in checks.items():
+            cmd = ["grep", "-P", data["regex"], data["file"]]
+            success, output = run_command(cmd)
+            
+            if success:
+                results[key] = True
+            else:
+                missing_items.append(f"{key} ({data['file']})")
 
-#         # common-account kontrolü
-#         ok3, out3 = run_command(["grep", "-PH", checks["account"], "/etc/pam.d/common-account"])
-#         if ok3 and out3.strip():
-#             results["account"] = True
+        if all(results.values()):
+            logger.info("[CIS 5.3.2.2][CHECK] Başarılı: pam_faillock tüm kuralları mevcut.")
+            return True, "pam_faillock etkin ve yapılandırılmış."
+        else:
+            msg = "Eksik konfigürasyonlar: " + ", ".join(missing_items)
+            logger.warning(f"[CIS 5.3.2.2][CHECK] Başarısız: {msg}")
+            return False, msg
 
-#         if all(results.values()):
-#             logger.info("[CIS 5.3.2.2][CHECK] PAM faillock kuralları eksiksiz bulundu.")
-#             return True, "pam_faillock etkin (CIS uyumlu)."
-
-#         # Eksik olanları listeler
-#         missing = [k for k, v in results.items() if not v]
-#         msg = "Eksik CIS faillock satırları: " + ", ".join(missing)
-#         logger.warning("[CIS 5.3.2.2][CHECK] " + msg)
-#         return False, msg
-
-#     except Exception as e:
-#         logger.error(f"[CIS 5.3.2.2][CHECK] Hata: {e}")
-#         return False, f"Hata: {e}"
-
-
-
-# def apply_pam_faillock(username=None, param=None):
-#     """
-#     CIS 5.3.2.2 - Ensure pam_faillock module is enabled
-
-#     Debian/Pardus uyumlu pam-config profilleri oluşturur, faillock.conf'u ayarlar ve etkinleştirir.
-
-#     """
-#     logger.warning("TEST: apply_pam_faillock fonksiyonu ÇALIŞTI!")
-
-#     try:
-#         is_enabled, msg = check_pam_faillock_enabled()
-#         if is_enabled:
-#             return True, f"Değişiklik gerekmedi: {msg}"
-
-#         logger.info("[PAM Faillock][APPLY] faillock yapılandırması başlatılıyor...")
-
-#         # faillock.conf dosyasını oluşturma
-#         faillock_conf_content = (
-#             "deny = 5\n"
-#             "unlock_time = 900\n"
-#             "silent\n"
-#         )
-
-#         with open("/etc/security/faillock.conf", "w", encoding="utf-8") as f:
-#             f.write(faillock_conf_content)
-#         logger.info("[PAM Faillock][APPLY] /etc/security/faillock.conf oluşturuldu.")
+    except Exception as e:
+        logger.error(f"[CIS 5.3.2.2][CHECK] Hata: {str(e)}")
+        return False, f"Kontrol sırasında hata: {str(e)}"
 
 
-#         faillock_profile = (
-#             "Name: Enable pam_faillock to deny access\n"
-#             "Default: yes\n"
-#             "Priority: 0\n"
-#             "Auth-Type: Primary\n"
-#             "Auth:\n"
-#             " \t[default=die] pam_faillock.so authfail\n"
-#         )
+def apply_pam_faillock(username=None, param=None):
+    """
+    CIS 5.3.2.2 - Ensure pam_faillock module is enabled
+    Debian/Pardus için /usr/share/pam-configs altına profilleri yazar ve etkinleştirir.
+    """
+    logger.info("[CIS 5.3.2.2][APPLY] PAM faillock yapılandırması uygulanıyor...")
 
-#         with open("/usr/share/pam-configs/faillock", "w", encoding="utf-8") as f:
-#             f.write(faillock_profile)
+    try:
+        faillock_content = (
+            "Name: Enable pam_faillock to deny access\n"
+            "Default: yes\n"
+            "Priority: 0\n"
+            "Auth-Type: Primary\n"
+            "Auth:\n"
+            "\t[default=die] pam_faillock.so authfail\n"
+        )
 
+        faillock_notify_content = (
+            "Name: Notify of failed login attempts and reset count upon success\n"
+            "Default: yes\n"
+            "Priority: 1024\n"
+            "Auth-Type: Primary\n"
+            "Auth:\n"
+            "\trequisite pam_faillock.so preauth\n"
+            "Account-Type: Primary\n"
+            "Account:\n"
+            "\trequired pam_faillock.so\n"
+        )
 
-#         faillock_notify_profile = (
-#             "Name: Notify of failed login attempts and reset count upon success\n"
-#             "Default: yes\n"
-#             "Priority: 1024\n"
-#             "Auth-Type: Primary\n"
-#             "Auth:\n"
-#             " \trequisite pam_faillock.so preauth\n"
-#             "Account-Type: Primary\n"
-#             "Account:\n"
-#             " \trequired pam_faillock.so\n"
-#         )
+        config_dir = "/usr/share/pam-configs"
+        if not os.path.exists(config_dir):
+            os.makedirs(config_dir, exist_ok=True)
 
-#         with open("/usr/share/pam-configs/faillock_notify", "w", encoding="utf-8") as f:
-#             f.write(faillock_notify_profile)
+        path_faillock = os.path.join(config_dir, "faillock")
+        path_notify = os.path.join(config_dir, "faillock_notify")
 
-#         if not os.path.exists("/usr/share/pam-configs/faillock"):
-#             return False, "faillock dosyası oluşturulamadı!"
+        with open(path_faillock, "w", encoding="utf-8") as f:
+            f.write(faillock_content)
+        
+        with open(path_notify, "w", encoding="utf-8") as f:
+            f.write(faillock_notify_content)
 
-#         if not os.path.exists("/usr/share/pam-configs/faillock_notify"):
-#             return False, "faillock_notify dosyası oluşturulamadı!"
+        logger.info("[APPLY] Profil dosyaları oluşturuldu. pam-auth-update çalıştırılıyor...")
 
-#         logger.info("[PAM Faillock][APPLY] PAM profilleri oluşturuldu. pam-auth-update çalıştırılıyor...")
+        # PAM profillerini etkinleştirir
+        cmd_update = ["pam-auth-update", "--enable", "faillock", "faillock_notify"]
+        
+        success, output = run_command(cmd_update)
+        
+        if not success:
+            logger.error(f"[APPLY] pam-auth-update hatası: {output}")
+            return False, f"PAM güncelleme hatası: {output}"
 
+        is_ok, check_msg = check_pam_faillock_enabled()
+        
+        if is_ok:
+            return True, "pam_faillock başarıyla yapılandırıldı ve etkinleştirildi."
+        else:
+            return False, f"Yapılandırma uygulandı fakat doğrulama başarısız: {check_msg}"
 
-#         success, output = run_command(["pam-auth-update", "--enable", "faillock"])
-#         if not success:
-#             return False, f"faillock profili etkinleştirilemedi: {output}"
-
-#         success, output = run_command(["pam-auth-update", "--enable", "faillock_notify"])
-#         if not success:
-#             return False, f"faillock_notify profili etkinleştirilemedi: {output}"
-
-
-#         is_enabled, msg = check_pam_faillock_enabled()
-
-#         if is_enabled:
-#             return True, "pam_faillock modülü başarıyla etkinleştirildi."
-#         else:
-#             return False, "pam_faillock modülü etkinleştirilemedi."
-
-#     except Exception as e:
-#         logger.error(f"[CIS 5.3.2.2][APPLY] Hata: {str(e)}")
-#         return False, f"Hata oluştu: {str(e)}"
+    except Exception as e:
+        logger.error(f"[CIS 5.3.2.2][APPLY] Kritik Hata: {str(e)}")
+        return False, f"İşlem sırasında istisna oluştu: {str(e)}"
 
 
 
-# def disable_pam_faillock(username=None, param=None):
-#     """
-#     CIS 5.3.2.2 - Revert faillock configuration
-#     Tüm faillock yapılandırmasını eksiksiz geri alır.
-#     """
-#     logger.info("[PAM Faillock][REVERT] Geri alma işlemi başlatılıyor...")
+def disable_pam_faillock(username=None, param=None):
+    """
+    CIS 5.3.2.2 değişikliğini güvenli bir şekilde geri alır.
+    
+    Yöntem:
+    1. pam-auth-update --remove ile profilleri deaktif eder (Config dosyalarını sistemin kendisi düzenler).
+    2. /usr/share/pam-configs/ altındaki oluşturulan dosyaları temizler.
+    3. pam_faillock referanslarının kalkıp kalkmadığını kontrol eder.
+    """
+    logger.info("[CIS 5.3.2.2][DISABLE] PAM faillock devre dışı bırakılıyor...")
 
-#     try:
-#         # PAM profillerini devre dışı bırakır
-#         run_command(["pam-auth-update", "--remove", "faillock"])
-#         run_command(["pam-auth-update", "--remove", "faillock_notify"])
+    try:
+        # PAM Update aracıyla profilleri güvenli şekilde sistemden dusurur.
+        # Bu komut common-auth ve common-account dosyalarını yeniden yazar ama faillock satırlarını çıkarır.
+        cmd_remove = ["pam-auth-update", "--remove", "faillock", "faillock_notify"]
+        
+        logger.info("[DISABLE] pam-auth-update --remove çalıştırılıyor...")
+        success, output = run_command(cmd_remove)
 
-#         # Profil dosyalarını siler
-#         for fpath in [
-#             "/usr/share/pam-configs/faillock",
-#             "/usr/share/pam-configs/faillock_notify",
-#             "/etc/security/faillock.conf",
-#         ]:
-#             if os.path.exists(fpath):
-#                 os.remove(fpath)
-#                 logger.info(f"[PAM Faillock][REVERT] Silindi: {fpath}")
+        if not success:
+            logger.error(f"[DISABLE] PAM update hatası: {output}")
+            return False, f"PAM yapılandırması kaldırılamadı: {output}"
 
-#         # PAM dosyalarındaki faillock satırlarını temizler
-#         pam_files = ["/etc/pam.d/common-auth", "/etc/pam.d/common-account"]
+        # Profil dosyalarını diskten temizler
+        config_dir = "/usr/share/pam-configs"
+        files_to_remove = ["faillock", "faillock_notify"]
+        removed_count = 0
 
-#         faillock_pattern = re.compile(r".*pam_faillock\.so.*")
+        for fname in files_to_remove:
+            fpath = os.path.join(config_dir, fname)
+            if os.path.exists(fpath):
+                try:
+                    os.remove(fpath)
+                    removed_count += 1
+                    logger.info(f"[DISABLE] Dosya silindi: {fpath}")
+                except OSError as e:
+                    logger.warning(f"[DISABLE] Dosya silinemedi ({fpath}): {e}")
+            else:
+                logger.info(f"[DISABLE] Dosya zaten yok: {fpath}")
 
-#         for pfile in pam_files:
-#             if not os.path.exists(pfile):
-#                 continue
+        run_command(["pam-auth-update", "--package"])
 
-#             with open(pfile, "r", encoding="utf-8") as f:
-#                 lines = f.readlines()
+        check_cmd = ["grep", "-r", "pam_faillock.so", "/etc/pam.d/common-auth", "/etc/pam.d/common-account"]
+        found, grep_output = run_command(check_cmd)
 
-#             new_lines = [ln for ln in lines if not faillock_pattern.search(ln)]
+        if found and grep_output.strip():
+            logger.warning(f"[DISABLE] UYARI: pam_faillock hala config dosyalarında görünüyor:\n{grep_output}")
+            return False, "İşlem yapıldı ancak pam_faillock.so hala config dosyalarında mevcut. Manuel kontrol gerekebilir."
+        
+        logger.info("[CIS 5.3.2.2][DISABLE] İşlem başarılı. Faillock modülü tamamen kaldırıldı.")
+        return True, "pam_faillock başarıyla devre dışı bırakıldı ve dosyalar temizlendi."
 
-#             with open(pfile, "w", encoding="utf-8") as f:
-#                 f.writelines(new_lines)
-
-#             logger.info(f"[PAM Faillock][REVERT] {pfile} içindeki faillock satırları temizlendi.")
-
-#         ok, out = run_command([
-#             "grep", "-P", r"\bpam_faillock\.so\b",
-#             "/etc/pam.d/common-auth",
-#             "/etc/pam.d/common-account"
-#         ])
-
-#         if ok and out.strip():
-#             logger.warning("[PAM Faillock][REVERT] UYARI: Hâlâ faillock satırları kalmış olabilir!")
-#             return False, f"Kalıntılar tespit edildi:\n{out}"
-
-#         logger.info("[PAM Faillock][REVERT] Revert işlemi başarıyla tamamlandı.")
-#         return True, "pam_faillock tamamen devre dışı bırakıldı."
-
-#     except Exception as e:
-#         logger.error(f"[PAM Faillock][REVERT] Hata: {e}")
-#         return False, f"Hata: {e}"
+    except Exception as e:
+        logger.error(f"[CIS 5.3.2.2][DISABLE] Kritik Hata: {str(e)}")
+        return False, f"Geri alma sırasında hata: {str(e)}"
 
 
 

@@ -123,6 +123,7 @@ from .pam import (
     apply_pam_unix_enabled,
     apply_pam_faillock,
     apply_pam_pwquality,
+    disable_pam_faillock,
     apply_pwhistory,
     apply_failed_attempts_lockout,
     apply_unlock_time,
